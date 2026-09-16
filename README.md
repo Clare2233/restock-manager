@@ -34,6 +34,20 @@
 
 ---
 
+## 界面预览
+
+| 首页 | 物品详情 |
+|---|---|
+| ![首页](docs/screenshots/home.jpg) | ![物品详情](docs/screenshots/detail.jpg) |
+
+| 购物清单 | 统计看板 |
+|---|---|
+| ![购物清单](docs/screenshots/shopping.jpg) | ![统计看板](docs/screenshots/stats.jpg) |
+
+![补货通知](docs/screenshots/notification.jpg)
+
+---
+
 ## 产品设计思路
 
 ### 1. MVP 取舍
