@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "my-app",
+    "name": "囤货管家",
     "slug": "my-app",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -20,7 +20,8 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.SCHEDULE_EXACT_ALARM"
-      ]
+      ],
+      "package": "com.clarecx4.restockmanager"
     },
     "web": {
       "output": "static",
