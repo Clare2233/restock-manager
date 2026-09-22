@@ -2,9 +2,17 @@ import { useSyncExternalStore } from 'react';
 
 import { getReadyDatabase } from '@/db/client';
 import { listItems } from '@/db/repositories/items.repo';
-import { listConsumptionSamplesByItem, recordQuickConsume } from '@/db/repositories/movements.repo';
+import {
+  adjustStockTo,
+  listConsumptionSamplesByItem,
+  recordConsume,
+  recordDiscard,
+  recordPurchase,
+  recordQuickConsume,
+} from '@/db/repositories/movements.repo';
 import { maxSampleWindowStart, predictItem, type Prediction } from '@/domain/prediction';
 import { scheduleReschedule } from '@/notifications/reschedule-debounce';
+import type { AiAction } from '@/types/ai';
 import type { Item, Millis } from '@/types/models';
 import { nowMs } from '@/utils/date';
 
@@ -170,6 +178,52 @@ export async function consumeItemOnce(itemId: number): Promise<void> {
   }
 }
 
+/**
+ * AI 自然语言录入的落库入口：按 `action` 分派到对应的语义化 repo 函数。
+ *
+ * 为什么单独有一个而不是复用 `consumeItemOnce`：AI 解析出的动作有四类
+ * （consume / purchase / adjust / discard），「猫粮还剩半袋」是**盘点**（把库存设为 0.5 袋），
+ * 「扔了一瓶过期牛奶」是**丢弃**（走 `assertMovementSign` 的负号约定、且不计入日均消耗）——
+ * 各自在 repo 里的语义和副作用都不同，这里只是把它们收在同一个入口后面，
+ * 让调用方（AI 确认卡片）只面对一个函数。
+ *
+ * **与 `consumeItemOnce` 不同，这个会抛异常**：卡片要就地把失败原因显示给用户
+ * （「库存不足」这类写失败必须被看见），所以不在这里吞掉错误。
+ *
+ * @param input.action 已排除 `'unknown'`（parse 层保证）
+ * @param input.quantity 基础单位数量；**action 为 adjust 时表示目标库存**
+ */
+export async function recordAiMovement(input: {
+  itemId: number;
+  action: Exclude<AiAction, 'unknown'>;
+  quantity: number;
+  /** purchase 的实付总额（元）；其余动作忽略 */
+  price?: number | null;
+}): Promise<void> {
+  const db = await getReadyDatabase();
+  const { itemId, action, quantity, price } = input;
+
+  // 四类一律标 source='ai'：将来统计「AI 录入占比」靠的就是这个字段。
+  // 不标的话 AI 录的流水会和手写的混在一起，功能用没用起来就永远说不清。
+  switch (action) {
+    case 'consume':
+      await recordConsume(db, { itemId, quantity, source: 'ai' });
+      break;
+    case 'discard':
+      await recordDiscard(db, { itemId, quantity, source: 'ai' });
+      break;
+    case 'purchase':
+      // 只给总额、不给单价：repo 内部会用 quantity 反算单价，月支出统计以总额为准
+      await recordPurchase(db, { itemId, quantity, totalPrice: price ?? null, source: 'ai' });
+      break;
+    case 'adjust':
+      await adjustStockTo(db, { itemId, targetStock: quantity, source: 'ai' });
+      break;
+  }
+
+  await refreshItemsAfterMutation();
+}
+
 /** 只读地取当前快照 */
 export function getItemsState(): ItemsState {
   return state;
@@ -200,4 +254,5 @@ export const itemsStore = {
   refreshItems,
   refreshItemsAfterMutation,
   consumeItemOnce,
+  recordAiMovement,
 };

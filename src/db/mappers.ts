@@ -54,6 +54,7 @@ const MOVEMENT_SOURCES: ReadonlySet<string> = new Set<MovementSource>([
   'quick',
   'manual',
   'import',
+  'ai',
 ]);
 
 const REMINDER_KINDS: ReadonlySet<string> = new Set<ReminderKind>([

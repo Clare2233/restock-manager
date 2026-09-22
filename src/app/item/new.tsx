@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 
@@ -21,8 +21,13 @@ import { itemsStore } from '@/store/items.store';
  * - 成功后 `itemsStore.refreshItems()` 同步列表缓存，再 `router.back()`
  *   回到来源页（首页空状态或库存页）——物品列表以 store 为准，
  *   不需要把新物品逐层传回去。
+ *
+ * 路由参数 `name` 只用来**预填名称**：AI 录入没匹配到物品时（「猫罐头」），
+ * 用户点「去新建」过来，名字已经在输入框里，不用再打一遍。
+ * 它只是初值，用户照样能改 —— 预填错了比不预填更烦，所以不做成只读。
  */
 export default function NewItemScreen() {
+  const params = useLocalSearchParams<{ name?: string }>();
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -48,7 +53,11 @@ export default function NewItemScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled">
-        <ItemForm onSubmit={(values) => void handleSubmit(values)} submitting={submitting} />
+        <ItemForm
+          initialName={params.name}
+          onSubmit={(values) => void handleSubmit(values)}
+          submitting={submitting}
+        />
 
         {submitError ? (
           <ThemedText type="small" themeColor="danger">

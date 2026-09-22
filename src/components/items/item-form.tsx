@@ -68,6 +68,11 @@ export type ItemFormValues = Omit<CreateItemInput, 'initialStock'> & {
 
 export type ItemFormProps = {
   item?: Item | null;
+  /**
+   * 新建模式下的名称初值（AI 录入没匹配到物品时用它预填用户说过的名字）。
+   * 只在首次挂载时读一次，与 `item` 一样；编辑模式下被 `item.name` 覆盖。
+   */
+  initialName?: string;
   onSubmit: (values: ItemFormValues) => void;
   onCancel?: () => void;
   submitting?: boolean;
@@ -276,6 +281,7 @@ function ChipGroup({
 
 export function ItemForm({
   item,
+  initialName,
   onSubmit,
   onCancel,
   submitting = false,
@@ -285,7 +291,7 @@ export function ItemForm({
 }: ItemFormProps) {
   const isEdit = item != null;
 
-  const [name, setName] = useState(() => item?.name ?? '');
+  const [name, setName] = useState(() => item?.name ?? initialName ?? '');
   const [category, setCategory] = useState<ItemCategory>(() => item?.category ?? 'other');
   const [unit, setUnit] = useState(() => item?.unit ?? '个');
   const [initialStock, setInitialStock] = useState('');

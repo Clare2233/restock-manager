@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   unit_price  REAL,                                  -- 仅 purchase：单价（基础单位价）
   total_price REAL,                                  -- 仅 purchase：实付总额（月支出用它）
   occurred_at INTEGER NOT NULL,                      -- 业务发生时间（支持补录过去）
-  source      TEXT    NOT NULL DEFAULT 'manual',     -- quick | manual | import
+  source      TEXT    NOT NULL DEFAULT 'manual',     -- quick | manual | import | ai
   note        TEXT,
   created_at  INTEGER NOT NULL,
   CHECK (

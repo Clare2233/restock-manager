@@ -321,7 +321,7 @@ function parseMovement(
       source.source,
       toMovementSource,
       `${label}的 source`,
-      'quick / manual / import',
+      'quick / manual / import / ai',
     ),
     note: optionalNullableText(source, 'note', label),
     createdAt: requireNumber(source, 'createdAt', label),

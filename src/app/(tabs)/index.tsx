@@ -1,14 +1,27 @@
 import { router } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
-import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useState } from 'react';
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Linking,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AiConfirmCard } from '@/components/ai/ai-confirm-card';
+import { AiInputBar } from '@/components/ai/ai-input-bar';
 import { EmptyState } from '@/components/common/empty-state';
 import { SectionCard } from '@/components/common/section-card';
 import { ItemCard } from '@/components/items/item-card';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { resolveAiItem, useAiEntry } from '@/hooks/use-ai-entry';
 import { useItems, useRefreshOnFocus, useRestockEntries } from '@/hooks/use-items';
 import { useNotificationPermission } from '@/hooks/use-notification-permission';
 import { useTheme } from '@/hooks/use-theme';
@@ -46,6 +59,16 @@ export default function HomeScreen() {
   const { permission } = useNotificationPermission();
   useRefreshOnFocus();
 
+  // AI 自然语言录入：状态机在 hook 里，这里只做拼装
+  const ai = useAiEntry(items);
+  const [aiText, setAiText] = useState('');
+
+  const handleAiSubmit = async () => {
+    const text = aiText;
+    setAiText('');
+    await ai.submit(text);
+  };
+
   // 「一件数据都还没有、也没出错」才算首屏加载。
   // 不能只看 loading：store 刚挂载时是 idle，用 loading 判断会先闪一下空状态。
   const initialLoading = !loaded && error === null;
@@ -55,14 +78,30 @@ export default function HomeScreen() {
 
   return (
     <ThemedView style={styles.screen}>
-      <ScrollView
+      {/*
+        KeyboardAvoidingView 只包 ScrollView + 输入框，**不包确认卡片**：
+        卡片是 Modal，渲染在自己的层级上，键盘把它顶起来反而会把「确认」推出屏幕。
+
+        behavior 为什么分平台：iOS 的原生窗口不随键盘收缩，只能靠 padding 把自己顶上去；
+        Android 默认 adjustResize，height 才是对得上缩放的那一种（真机上如果再被抬高一层，
+        就把 Android 的 behavior 去掉，让系统自己缩放）。
+
+        keyboardVerticalOffset = BottomTabInset：输入框这一段本来就在标签栏上方，
+        它到屏幕底部的距离就是标签栏高度；不减掉这段，键盘弹起时会多抬一截，视觉上绷得很紧。
+      */}
+      <KeyboardAvoidingView
+        style={styles.screen}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={BottomTabInset}>
+        <ScrollView
         style={styles.scroll}
         contentContainerStyle={[
           styles.content,
           {
             paddingTop: insets.top + Spacing.three,
-            // 底部留出标签栏的高度，否则最后一张卡片会被标签栏压住
-            paddingBottom: BottomTabInset + Spacing.five,
+            // 底部只留常规间距：标签栏现在被 AI 输入框挡在更下面，
+            // 再留 BottomTabInset 会白空一大截（输入框自己带了这个 inset）
+            paddingBottom: Spacing.five,
           },
         ]}
         showsVerticalScrollIndicator={false}>
@@ -216,6 +255,38 @@ export default function HomeScreen() {
           </SectionCard>
         ) : null}
       </ScrollView>
+
+        {/*
+          AI 输入框挂在 ScrollView 外面：内容再长也不会把它顶走。
+          卡片展开时收起输入框，避免两层输入叠在一起。
+        */}
+        <AiInputBar
+          value={aiText}
+          onChangeText={setAiText}
+          onSubmit={() => void handleAiSubmit()}
+          loading={ai.phase.kind === 'parsing'}
+          error={ai.phase.kind === 'error' ? ai.phase.message : null}
+          hidden={ai.phase.kind === 'confirm'}
+        />
+      </KeyboardAvoidingView>
+
+      {ai.phase.kind === 'confirm' ? (
+        <AiConfirmCard
+          draft={ai.phase.draft}
+          item={resolveAiItem(ai.phase.draft.match, ai.phase.draft.selectedItemId)}
+          allItems={items}
+          saving={ai.saving}
+          onSelectItem={ai.selectItem}
+          onPatch={ai.patchDraft}
+          onConfirm={() => void ai.confirm()}
+          onCancel={ai.cancel}
+          onCreateItem={(itemName) => {
+            ai.cancel();
+            // 带上名字预填新建表单：用户已经说过一次「猫罐头」，不该再打一遍
+            router.push({ pathname: '/item/new', params: { name: itemName } });
+          }}
+        />
+      ) : null}
     </ThemedView>
   );
 }

@@ -10,7 +10,7 @@ import type {
   StockMovementRow,
 } from '@/types/models';
 import { nowMs } from '@/utils/date';
-import { roundTo } from '@/utils/number';
+import { formatQuantity, roundTo } from '@/utils/number';
 
 /**
  * 库存流水仓库 —— 数据层最核心的文件。
@@ -80,6 +80,78 @@ async function assertItemExistsCore(db: SQLiteDatabase, itemId: number): Promise
   }
 }
 
+/**
+ * 数量文案，口径与 `domain/units` 的 `formatStock` 一致（整数不带小数点）。
+ * 刻意在这里抄一遍而不是 import 领域层：数据层不反向依赖上层包。
+ */
+function describeQuantity(value: number, unit: string): string {
+  const whole = Math.abs(value - Math.round(value)) < 1e-9;
+  return formatQuantity(value, unit, whole ? 0 : 2);
+}
+
+/**
+ * **库存下限检查**：写完这条流水之后，该物品的库存不能是负数。
+ *
+ * ## 为什么检查放在这一层
+ *
+ * 曾经「手帕纸」库存为 0，AI 录入一句「今天用了一卷纸」直接调 `recordConsume`
+ * 写成了 -1 —— UI 上唯一的前置校验（手动录入页「不超过当前库存」）被绕过去了，
+ * 而 `recordDiscard` 至今**只有 AI 一个调用方**，连 UI 兜底都没有。
+ * `applyMovementCore` 是所有流水写入的唯一通道，放在这里任何调用方都绕不过去。
+ *
+ * ## 两个刻意的口径
+ *
+ * - **读 `SUM(quantity)` 而不读 `items.stock`**：后者只是缓存值。
+ *   历史上已经出现过负数库存，判定必须对着唯一事实来源说话，
+ *   否则会出现「缓存说还有 1」但流水其实是 0 这种两头不一致的放行。
+ * - **`purchase` 是唯一例外**：它的数量恒为正（符号约束已保证），余额只会变大。
+ *   挡住它等于让已经负数的库存失去最后一条自救路径 —— 「买了东西反而被拒」
+ *   比「库存还是负数」更难解释。
+ *
+ * `adjust`（盘点）同样受这条约束：目标库存为负一律拒绝。反过来，
+ * **修「-1」那条账靠的就是盘点** —— 目标是 0，`0 >= 0` 放行。
+ */
+async function assertStockFloorCore(
+  db: SQLiteDatabase,
+  params: InsertMovementParams,
+): Promise<void> {
+  if (params.type === 'purchase') return;
+
+  const row = await db.getFirstAsync<{ name: string; unit: string; stock: number }>(
+    `SELECT i.name, i.unit, COALESCE(SUM(m.quantity), 0) AS stock
+       FROM items i
+       LEFT JOIN stock_movements m ON m.item_id = i.id
+      WHERE i.id = ?
+      GROUP BY i.id`,
+    [params.itemId],
+  );
+  // 物品不存在时不在这里报错：交给 insertMovementCore 的 assertItemExistsCore，它的文案更准
+  if (!row) return;
+
+  const current = roundTo(row.stock);
+  const next = roundTo(current + params.quantity);
+  if (next >= 0) return;
+
+  if (params.type === 'adjust') {
+    throw new Error(
+      `盘点后库存不能是负数：「${row.name}」调整后会变成 ${describeQuantity(next, row.unit)}`,
+    );
+  }
+
+  // 余额已经是负数：这是脏数据，提示要走盘点修回来，而不是让用户改数量
+  if (current < 0) {
+    throw new Error(
+      `库存已经是负数：「${row.name}」当前 ${describeQuantity(current, row.unit)}，` +
+        '先盘点把它修正成 0 再记录消耗',
+    );
+  }
+
+  throw new Error(
+    `库存不足：「${row.name}」当前只剩 ${describeQuantity(current, row.unit)}，` +
+      `本次要扣 ${describeQuantity(Math.abs(params.quantity), row.unit)}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // 写原语（无事务）
 // ---------------------------------------------------------------------------
@@ -131,11 +203,18 @@ export async function recomputeStockCore(
   return stock;
 }
 
-/** 插入流水 + 重算库存（+ 采购时更新参考单价）。**不开事务**。 */
+/**
+ * 插入流水 + 重算库存（+ 采购时更新参考单价）。**不开事务**。
+ *
+ * 这里同时也是**库存下限的唯一守门处**：所有对外写接口（`recordConsume` /
+ * `recordDiscard` / `recordQuickConsume` / `adjustStockTo` / `recordMovement`）
+ * 最终都从这里出去，检查放一次就够，将来新增任何入口都不会漏。
+ */
 export async function applyMovementCore(
   db: SQLiteDatabase,
   params: InsertMovementParams,
 ): Promise<MovementResult> {
+  await assertStockFloorCore(db, params);
   const movementId = await insertMovementCore(db, params);
   const stock = await recomputeStockCore(db, params.itemId);
 
@@ -246,7 +325,14 @@ export async function recordPurchase(
 /** 盘点校正：把库存调整为目标值 */
 export async function adjustStockTo(
   db: SQLiteDatabase,
-  params: { itemId: number; targetStock: number; occurredAt?: number; note?: string | null },
+  params: {
+    itemId: number;
+    targetStock: number;
+    occurredAt?: number;
+    note?: string | null;
+    /** 缺省 'manual'；AI 录入的盘点传 'ai' */
+    source?: MovementSource;
+  },
 ): Promise<MovementResult> {
   const row = await db.getFirstAsync<{ stock: number }>(
     'SELECT stock FROM items WHERE id = ?',
@@ -263,7 +349,7 @@ export async function adjustStockTo(
     itemId: params.itemId,
     type: 'adjust',
     quantity: delta,
-    source: 'manual',
+    source: params.source ?? 'manual',
     occurredAt: params.occurredAt,
     note: params.note ?? '盘点校正',
   });
@@ -272,13 +358,20 @@ export async function adjustStockTo(
 /** 丢弃 / 过期报废（负数由内部保证）。**不计入日均消耗**，避免污染预测。 */
 export async function recordDiscard(
   db: SQLiteDatabase,
-  params: { itemId: number; quantity: number; occurredAt?: number; note?: string | null },
+  params: {
+    itemId: number;
+    quantity: number;
+    occurredAt?: number;
+    note?: string | null;
+    /** 缺省 'manual'；AI 录入的丢弃传 'ai' */
+    source?: MovementSource;
+  },
 ): Promise<MovementResult> {
   return recordMovement(db, {
     itemId: params.itemId,
     type: 'discard',
     quantity: -Math.abs(roundTo(params.quantity)),
-    source: 'manual',
+    source: params.source ?? 'manual',
     occurredAt: params.occurredAt,
     note: params.note ?? null,
   });

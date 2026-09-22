@@ -45,8 +45,10 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "db:smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON ./scripts/db-migrate-smoke.mjs",
+    "stock:smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON ./scripts/stock-floor-smoke.mjs",
     "notifications:smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON ./scripts/notifications-smoke.mjs",
-    "backup:smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON ./scripts/backup-smoke.mjs"
+    "backup:smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON ./scripts/backup-smoke.mjs",
+    "ai:smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON ./scripts/ai-parse-smoke.mjs"
   },
   "private": true
 }

@@ -24,8 +24,14 @@ export type ItemCategory = 'cleaning' | 'paper' | 'drink' | 'personal' | 'other'
 /** 流水类型 */
 export type MovementType = 'consume' | 'purchase' | 'adjust' | 'discard';
 
-/** 流水来源，用于区分快捷扣减 / 手动录入 / 备份导入 */
-export type MovementSource = 'quick' | 'manual' | 'import';
+/**
+ * 流水来源，用于区分快捷扣减 / 手动录入 / 备份导入 / AI 录入。
+ *
+ * `'ai'` 与 `'manual'` 的区别是**录入方式**而不是「谁负责」：
+ * AI 录入同样经过用户确认，但标出来才能回答「多少条是 AI 记的」
+ * 以及「AI 记的准不准」—— 前者是功能使用率，后者是将来调 prompt 的依据。
+ */
+export type MovementSource = 'quick' | 'manual' | 'import' | 'ai';
 
 /** 通知种类 */
 export type ReminderKind = 'buy_reminder' | 'out_of_stock' | 'daily_digest';

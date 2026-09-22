@@ -31,8 +31,12 @@ const ICON_NOT_FOUND = { ios: 'questionmark.square', android: 'help_outline', we
  *   消耗历史与预测随之更新。
  *
  * 校验时机与 purchase.tsx 一致：点过提交才显示错误，之后随输入实时更新。
- * 除了「大于 0」之外还前置校验「不超过当前库存」—— 数据层同样会拦，
- * 但在这里拦能给出带单位的明确报错，而不是让用户看到一条干巴巴的失败。
+ * 除了「大于 0」之外还校验「不超过当前库存」（`parsedQuantity > item.stock`）。
+ *
+ * 为什么要自己拦一遍 —— 页面能给出**带单位**的报错（`不能超过当前库存 3 个`），
+ * 而数据层那条防线是给所有调用方兜底的（见 `movements.repo` 的 `assertStockFloorCore`），
+ * 它的文案是通用的，也不会跟着输入实时更新。UI 拦是体验，数据层拦是不变量，
+ * 两层都要有：**曾经 AI 录入因为只有 UI 防线而被绕过，把库存写成了负数**。
  */
 export default function ConsumeScreen() {
   const theme = useTheme();
