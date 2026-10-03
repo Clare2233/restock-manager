@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>校园食堂点评 · 今天吃什么</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: { primary: '#2563EB', warm: '#F59E0B' },
+        borderRadius: { card: '16px' }
+      }
+    }
+  };
+</script>
+<style>
+  html, body { -webkit-tap-highlight-color: transparent; }
+  body { background:#EEF2FF; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif; }
+  .no-scrollbar::-webkit-scrollbar { display:none; }
+  .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
+  .card { background:#fff; border-radius:16px; box-shadow:0 2px 12px rgba(15,23,42,.06); }
+  .fade { animation: fade .25s ease both; }
+  @keyframes fade { from { opacity:0; transform:translateY(8px);} to { opacity:1; transform:none; } }
+  .pop { animation: pop .18s ease both; }
+  @keyframes pop { from { transform:scale(.9); opacity:0;} to { transform:scale(1); opacity:1; } }
+  .snap-x { scroll-snap-type: x mandatory; }
+  .snap-item { scroll-snap-align: start; }
+  input, textarea, select { font-size:16px; }
+  .line-2 { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .line-3 { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+  .mask-top { background:linear-gradient(180deg, rgba(37,99,235,.95), rgba(37,99,235,.75)); }
+</style>
+</head>
+<body>
+<div id="app" class="max-w-[480px] mx-auto min-h-screen bg-slate-50 relative overflow-x-hidden"></div>
+<div id="layer" class="fixed inset-0 z-[80] pointer-events-none"></div>
+
+<script>
+/* =========================================================
+ * 校园食堂菜品点评推荐 H5 · 单文件实现
+ * 数据持久化：localStorage['campus_food_data']
+ * ========================================================= */
+(function () {
+  'use strict';
+
+  var KEY = 'campus_food_data';
+  var DIMS = [
+    { k: 'taste',   label: '口味' },
+    { k: 'price',   label: '价格' },
+    { k: 'portion', label: '分量' },
+    { k: 'queue',   label: '排队' },
+    { k: 'hygiene', label: '卫生' }
+  ];
+  var DAY = 86400000;
+
+  /* ---------------- 工具函数 ---------------- */
+  var _seed = 20240301;
+  function rnd() { _seed = (_seed * 9301 + 49297) % 233280; return _seed / 233280; }
+  function ri(a, b) { return a + Math.floor(rnd() * (b - a + 1)); }
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function uid(p) { return (p || 'id') + '_' + Date.now().toString(36) + Math.floor(Math.random() * 1e5).toString(36); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function money(n) { return '¥' + (Math.round(n * 10) / 10); }
+  function avg5(s) {
+    var t = 0; DIMS.forEach(function (d) { t += s[d.k] || 0; });
+    return t / DIMS.length;
+  }
+  function fmtTime(ts) {
+    var d = new Date(ts), now = new Date();
+    var diff = Date.now() - ts;
+    if (diff < 3600000) return Math.max(1, Math.floor(diff / 60000)) + ' 分钟前';
+    if (diff < DAY && d.getDate() === now.getDate()) return Math.floor(diff / 3600000) + ' 小时前';
+    if (diff < 2 * DAY) return '昨天';
+    if (diff < 30 * DAY) return Math.floor(diff / DAY) + ' 天前';
+    return (d.getMonth() + 1) + '月' + d.getDate() + '日';
+  }
+  function star(fill, size, color) {
+    size = size || 14;
+    return '<svg viewBox="0 0 24 24" width="' + size + '" height="' + size + '" fill="' + (fill ? (color || '#F59E0B') : '#E2E8F0') + '">' +
+      '<path d="M12 2.6l2.9 6.05 6.6.72-4.95 4.45 1.4 6.5L12 17.05 6.05 20.3l1.4-6.5L2.5 9.37l6.6-.72z"/></svg>';
+  }
+  function starsHTML(n, size) {
+    var out = '', r = Math.round(n || 0);
+    for (var i = 1; i <= 5; i++) out += star(i <= r, size);
+    return '<span class="inline-flex items-center gap-[1px] align-middle">' + out + '</span>';
+  }
+  function bar(pct, color) {
+    return '<div class="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">' +
+      '<div class="h-full rounded-full transition-all" style="width:' + clamp(pct, 0, 100) + '%;background:' + (color || '#2563EB') + '"></div></div>';
+  }
+  function toast(msg) {
+    var d = document.createElement('div');
+    d.className = 'fixed left-1/2 -translate-x-1/2 top-16 z-[100] bg-slate-900/90 text-white text-sm px-4 py-2.5 rounded-full shadow-lg pop';
+    d.style.maxWidth = '86vw';
+    d.textContent = msg;
+    document.body.appendChild(d);
+    setTimeout(function () { d.style.transition = 'opacity .3s'; d.style.opacity = '0'; setTimeout(function () { d.remove(); }, 320); }, 1900);
+  }
+
+  /* ---------------- 种子数据 ---------------- */
+  function seedData() {
+    var now = Date.now();
+    var canteens = [
+      { id: 'c1', name: '一食堂 · 学苑餐厅', short: '一食堂', desc: '离教学楼最近，下课 3 分钟直达，早饭首选', emoji: '🏫', open: '06:30 - 21:00', cover: 'https://picsum.photos/seed/canteen1/600/300' },
+      { id: 'c2', name: '二食堂 · 清真餐厅', short: '二食堂', desc: '西北风味聚集地，面食爱好者的天堂', emoji: '🍜', open: '07:00 - 20:30', cover: 'https://picsum.photos/seed/canteen2/600/300' },
+      { id: 'c3', name: '三食堂 · 教工餐厅', short: '三食堂', desc: '自选与轻食为主，环境安静座位多', emoji: '🥗', open: '10:30 - 20:00', cover: 'https://picsum.photos/seed/canteen3/600/300' }
+    ];
+    var windows = [
+      { id: 'w1', canteenId: 'c1', name: '川湘小炒', desc: '现炒锅气足，辣度可自由选择', emoji: '🌶️' },
+      { id: 'w2', canteenId: 'c1', name: '面食工坊', desc: '手工现拉，汤底熬足 6 小时', emoji: '🍲' },
+      { id: 'w3', canteenId: 'c1', name: '港式烧腊', desc: '蜜汁叉烧，皮脆肉嫩', emoji: '🍖' },
+      { id: 'w4', canteenId: 'c2', name: '兰州拉面', desc: '一清二白三红四绿五黄', emoji: '🐂' },
+      { id: 'w5', canteenId: 'c2', name: '新疆大盘鸡', desc: '份量惊人，建议两人同行', emoji: '🍗' },
+      { id: 'w6', canteenId: 'c2', name: '烤肉拌饭', desc: '现烤现拌，香气扑鼻', emoji: '🍢' },
+      { id: 'w7', canteenId: 'c3', name: '自选快餐', desc: '两荤一素，米饭免费加', emoji: '🍱' },
+      { id: 'w8', canteenId: 'c3', name: '轻食沙拉', desc: '低卡轻负担，支持定制搭配', emoji: '🥗' }
+    ];
+
+    // [菜名, 价格, 窗口, 简介, 质量基数(3~5), 是否新菜] —— 共 20 道
+    var defs = [
+      ['麻婆豆腐', 8, 'w1', '嫩豆腐配牛肉末，麻辣鲜香下饭神器', 4.4, false],
+      ['水煮肉片', 15, 'w1', '大片里脊肉，油而不腻', 4.6, false],
+      ['宫保鸡丁', 13, 'w1', '经典川菜，花生米超香', 4.3, false],
+      ['麻辣香锅（小份）', 20, 'w1', '自选菜品麻辣香锅，本周上新', 4.5, true],
+      ['油泼面', 9, 'w2', '手工扯面，热油一泼满屋飘香', 4.5, false],
+      ['番茄鸡蛋面', 10, 'w2', '酸甜口，治愈系家常味道', 4.1, false],
+      ['牛肉刀削面', 14, 'w2', '刀削面筋道，牛肉炖得软烂', 4.4, false],
+      ['蜜汁叉烧饭', 16, 'w3', '叉烧肥瘦相间，蜜汁浓郁', 4.7, false],
+      ['脆皮烧鸭饭', 18, 'w3', '鸭皮酥脆，配酸梅酱一绝', 4.5, false],
+      ['兰州牛肉面', 12, 'w4', '汤清萝卜白，辣椒油香而不燥', 4.6, false],
+      ['加肉牛肉面', 18, 'w4', '双份牛肉，肉食动物狂喜', 4.5, false],
+      ['大盘鸡（小份）', 28, 'w5', '土豆软糯，最后拌面才是灵魂', 4.7, false],
+      ['新疆拌面', 16, 'w5', '过水面条配羊肉浇头', 4.3, false],
+      ['羊肉串套餐', 20, 'w6', '5 串现烤羊肉 + 馕', 4.4, false],
+      ['烤肉拌饭', 14, 'w6', '烤肉现切现拌，米饭管饱', 4.2, false],
+      ['双拼自选', 12, 'w7', '一荤两素，米饭免费加', 3.9, false],
+      ['糖醋排骨套餐', 15, 'w7', '酸甜口，排骨软糯脱骨', 4.4, false],
+      ['鸡胸轻食沙拉', 16, 'w8', '低卡高蛋白，健身党友好', 4.1, true],
+      ['牛油果三文鱼沙拉', 22, 'w8', '本周新品，食材新鲜', 4.6, true],
+      ['芝士烤红薯', 7, 'w8', '本周新品，甜品窗口限定', 4.3, true]
+    ];
+    var dishes = defs.map(function (d, i) {
+      return {
+        id: 'd' + (i + 1),
+        name: d[0], price: d[1], windowId: d[2],
+        canteenId: windows.filter(function (w) { return w.id === d[2]; })[0].canteenId,
+        desc: d[3], q: d[4], isNew: d[5],
+        img: 'https://picsum.photos/seed/food' + (i + 1) + '/400/300',
+        tags: d[5] ? ['本周新菜'] : [],
+        onSale: true,
+        createdAt: now - (d[5] ? ri(1, 9) : ri(60, 400)) * DAY
+      };
+    });
+    dishes = dishes.slice(0, 20); // 保证 20 道菜
+
+    var texts = [
+      '真的绝了！连吃了三天都不腻，强烈推荐给大家。',
+      '味道还可以，就是中午排队排了二十分钟，建议错峰。',
+      '分量很足，男生一份就能吃饱，价格也很良心。',
+      '阿姨手抖得厉害，肉给得有点少，希望改进一下。',
+      '汤底很鲜，面条筋道，冬天来一碗太治愈了。',
+      '性价比之王，这个价格还要什么自行车。',
+      '味道偏咸，可能师傅今天盐放多了，希望稳定一下口味。',
+      '环境干净，桌面收拾得很及时，吃得放心。',
+      '肉给得很实在，配菜也新鲜，五星好评。',
+      '感觉一般般，没有传说中那么惊艳，中规中矩吧。',
+      '出餐速度很快，刷完卡两分钟就拿到了，赶课必备。',
+      '辣椒很香但不烧胃，川湘窗口的水平一直在线。',
+      '米饭有点硬，其他都挺好，希望稍微焖软一点。',
+      '室友推荐的，确实好吃，已经加入我的常驻菜单。',
+      '价格小贵，但食材新鲜，偶尔吃一次还是值得的。',
+      '排队真的久，建议十一点半之前去，不然等到怀疑人生。',
+      '分量比上学期少了点，希望保持原来的水准。',
+      '卫生情况不错，餐具都是热的，看着就放心。',
+      '甜度刚刚好，不会腻，作为饭后小甜点很棒。',
+      '第一次吃有点惊艳，第二次就觉得普通了，可能看厨师心情。'
+    ];
+    var nicks = ['干饭人小王', '不吃香菜', '食堂常客', '大一小萌新', '研究生学姐', '健身教练张',
+      '夜宵爱好者', '南区住户', '图书馆钉子户', '路过的好心人', '爱睡觉的猫', '不吃辣星人'];
+
+    // 40 条已通过评价：每道菜 1 条，再给前 10 道菜各补 2 条（使其达到 3 条）
+    var order = [];
+    for (var k = 0; k < 20; k++) order.push(k);
+    for (var k2 = 0; k2 < 10; k2++) { order.push(k2); order.push(k2); }
+
+    var reviews = [];
+    for (var i = 0; i < 40; i++) {
+      var dish = dishes[order[i]];
+      var s = {};
+      DIMS.forEach(function (d) {
+        var v = dish.q + (rnd() * 1.8 - 0.9);
+        if (d.k === 'price') v = 5 - (dish.price - 8) / 7 + (rnd() * 1.2 - 0.6);
+        if (d.k === 'queue') v = 4.2 - dish.price / 14 + (rnd() * 2 - 1);
+        if (d.k === 'portion') v = dish.q + 0.4 + (rnd() * 1.4 - 0.7);
+        s[d.k] = clamp(Math.round(v), 1, 5);
+      });
+      var days = (i % 3 === 0) ? ri(1, 24) : ri(20, 75);
+      var withImg = (i % 6 === 0); // 约 7 条带图评价
+      var images = [];
+      if (withImg) {
+        var cnt = (i === 12) ? 2 : 1; // 共 8 张占位图
+        for (var m = 0; m < cnt; m++) images.push('https://picsum.photos/seed/rv' + i + 'x' + m + '/400/300');
+      }
+      reviews.push({
+        id: 'r' + (i + 1),
+        dishId: dish.id,
+        userId: (i % 13 === 0) ? 'me' : ('u' + i),
+        nick: nicks[i % nicks.length],
+        anonymous: i % 4 !== 0,
+        scores: s,
+        text: texts[i % texts.length],
+        images: images,
+        status: 'approved',
+        rejectReason: '',
+        createdAt: now - days * DAY
+      });
+    }
+    // 我的两条非通过状态评价（用于「我的评价」展示状态）
+    var myPending = {
+      id: 'rm1', dishId: 'd9', userId: 'me', nick: '我', anonymous: false,
+      scores: { taste: 5, price: 4, portion: 4, queue: 3, hygiene: 5 },
+      text: '烧鸭皮真的很脆，就是窗口人太多了，建议提前去。',
+      images: [], status: 'pending', rejectReason: '', createdAt: now - 2 * 3600000
+    };
+    var myRejected = {
+      id: 'rm2', dishId: 'd4', userId: 'me', nick: '我', anonymous: true,
+      scores: { taste: 3, price: 3, portion: 3, queue: 3, hygiene: 3 },
+      text: '太好吃了啊啊啊啊啊啊啊啊啊啊啊啊（刷屏）',
+      images: [], status: 'rejected', rejectReason: '评价内容过短且无实质信息，请补充具体描述后重新提交。',
+      createdAt: now - 3 * DAY
+    };
+    reviews.push(myPending, myRejected);
+
+    var reports = [
+      { id: 'rp1', reviewId: 'r6', reason: '内容与本菜品无关，疑似广告', status: 'pending', createdAt: now - DAY },
+      { id: 'rp2', reviewId: 'r17', reason: '含有不文明用语', status: 'pending', createdAt: now - 2 * DAY }
+    ];
+
+    return {
+      canteens: canteens,
+      windows: windows,
+      dishes: dishes,
+      reviews: reviews,
+      reports: reports,
+      favorites: ['d8', 'd10', 'd20'],
+      user: { id: 'me', nick: '干饭人' },
+      version: 1,
+      createdAt: now
+    };
+  }
+
+  /* ---------------- 存储 ---------------- */
+  var DB = null;
+  function load() {
+    try {
+      var raw = localStorage.getItem(KEY);
+      if (!raw) { DB = seedData(); save(); return; }
+      var d = JSON.parse(raw);
+      if (!d || !d.dishes || !d.dishes.length) { DB = seedData(); save(); return; }
+      DB = d;
+    } catch (e) { DB = seedData(); save(); }
+  }
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(DB)); }
+    catch (e) { toast('存储空间不足，图片过多可能超限'); }
+  }
+  function reset() { localStorage.removeItem(KEY); load(); render(); toast('已重置为种子数据'); }
+
+  /* ---------------- 数据查询 ---------------- */
+  function getDish(id) { return DB.dishes.filter(function (d) { return d.id === id; })[0]; }
+  function getWindow(id) { return DB.windows.filter(function (w) { return w.id === id; })[0]; }
+  function getCanteen(id) { return DB.canteens.filter(function (c) { return c.id === id; })[0]; }
+  function getReview(id) { return DB.reviews.filter(function (r) { return r.id === id; })[0]; }
+  function dishReviews(id, status) {
+    return DB.reviews.filter(function (r) { return r.dishId === id && (!status || r.status === status); });
+  }
+  function isFav(id) { return DB.favorites.indexOf(id) >= 0; }
+
+  // 综合分 = 五维平均分；榜单加权：近 30 天 ×1.5，带图 ×1.2
+  function dishStats(id) {
+    var rs = dishReviews(id, 'approved');
+    var n = rs.length, wsum = 0, wo = 0, wd = {};
+    DIMS.forEach(function (d) { wd[d.k] = 0; });
+    var t30 = Date.now() - 30 * DAY;
+    rs.forEach(function (r) {
+      var w = 1;
+      if (r.createdAt >= t30) w *= 1.5;
+      if (r.images && r.images.length) w *= 1.2;
+      wsum += w;
+      wo += avg5(r.scores) * w;
+      DIMS.forEach(function (d) { wd[d.k] += (r.scores[d.k] || 0) * w; });
+    });
+    var out = { count: n, overall: 0, weighted: 0, dims: {} };
+    DIMS.forEach(function (d) { out.dims[d.k] = wsum ? wd[d.k] / wsum : 0; });
+    if (wsum) { out.overall = wo / wsum; out.weighted = wo / wsum; }
+    out.few = n < 3;
+    return out;
+  }
+  function saleDishes() { return DB.dishes.filter(function (d) { return d.onSale !== false; }); }
+  function topDishes(by, limit) {
+    var arr = saleDishes().filter(function (d) { return dishStats(d.id).count > 0; });
+    arr.sort(function (a, b) { return by(b) - by(a); });
+    return arr.slice(0, limit || 10);
+  }
+  function byOverall(d) { return dishStats(d.id).weighted; }
+  function byDim(k) { return function (d) { return dishStats(d.id).dims[k]; }; }
+  function byValue(d) {
+    var s = dishStats(d.id);
+    return s.count ? (s.weighted / Math.max(1, d.price)) * 10 : 0;
+  }
+  function byNew(d) {
+    var s = dishStats(d.id);
+    var fresh = d.isNew ? 1 : 0;
+    return s.weighted + fresh * 0.6;
+  }
+
+  var TAG_COLOR = {
+    warm: 'bg-amber-50 text-amber-700 border-amber-200',
+    primary: 'bg-blue-50 text-blue-700 border-blue-200',
+    emerald: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    rose: 'bg-rose-50 text-rose-600 border-rose-200',
+    teal: 'bg-teal-50 text-teal-700 border-teal-200',
+    slate: 'bg-slate-50 text-slate-600 border-slate-200'
+  };
+  function dishTags(id) {
+    var d = getDish(id), s = dishStats(id), out = [];
+    (d.tags || []).forEach(function (t) { out.push({ t: t, c: 'primary' }); });
+    if (s.count === 0) return out.length ? out : [{ t: '暂无评价', c: 'slate' }];
+    if (s.dims.taste >= 4.3) out.push({ t: '好吃', c: 'warm' });
+    if (s.dims.price >= 4.2 || d.price <= 10) out.push({ t: '便宜', c: 'emerald' });
+    if (s.dims.portion >= 4.3) out.push({ t: '分量足', c: 'primary' });
+    if (s.dims.queue <= 2.8) out.push({ t: '排队久', c: 'rose' });
+    if (s.dims.queue >= 4.3) out.push({ t: '出餐快', c: 'emerald' });
+    if (s.dims.hygiene >= 4.3) out.push({ t: '卫生好', c: 'teal' });
+    if (s.overall >= 4.5) out.push({ t: '高分推荐', c: 'warm' });
+    return out.slice(0, 5);
+  }
+  function tagsHTML(id) {
+    return dishTags(id).map(function (t) {
+      return '<span class="text-[11px] px-2 py-[3px] rounded-full border ' + TAG_COLOR[t.c] + '">' + esc(t.t) + '</span>';
+    }).join('');
+  }
+
+  /* ---------------- 路由 ---------------- */
+  var stack = [];
+  var TABS = ['home', 'rank', 'search', 'mine'];
+  function cur() { return stack[stack.length - 1] || { name: 'home', params: {} }; }
+  function go(name, params, opt) {
+    opt = opt || {};
+    if (opt.tab || TABS.indexOf(name) >= 0) stack = [];
+    stack.push({ name: name, params: params || {} });
+    window.scrollTo(0, 0);
+    render();
+  }
+  function back() {
+    stack.pop();
+    if (!stack.length) stack.push({ name: 'home', params: {} });
+    window.scrollTo(0, 0);
+    render();
+  }
+  var adminAuthed = false;
+
+  /* ---------------- 公共组件 ---------------- */
+  function header(title, opt) {
+    opt = opt || {};
+    return '<div class="sticky top-0 z-40 ' + (opt.plain ? 'bg-slate-50/95 backdrop-blur' : 'mask-top text-white') + '">' +
+      '<div class="flex items-center gap-2 px-4 h-12">' +
+      '<button data-act="back" class="w-8 h-8 -ml-1 flex items-center justify-center rounded-full ' + (opt.plain ? 'text-slate-700' : 'text-white/90') + '">' +
+      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>' +
+      '<div class="flex-1 font-semibold text-[15px] truncate">' + esc(title) + '</div>' +
+      (opt.right || '') +
+      '</div></div>';
+  }
+
+  function navBar() {
+    var p = cur(), active = TABS.indexOf(p.name) >= 0 ? p.name : (stack.length ? stack[0].name : 'home');
+    var items = [
+      { k: 'home', t: '首页', i: '🏠' },
+      { k: 'rank', t: '榜单', i: '🏆' },
+      { k: 'search', t: '搜索', i: '🔍' },
+      { k: 'mine', t: '我的', i: '👤' }
+    ];
+    return '<nav class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[480px] z-50 bg-white/95 backdrop-blur border-t border-slate-100 pb-[env(safe-area-inset-bottom)]">' +
+      '<div class="flex h-[58px]">' + items.map(function (it) {
+        var on = active === it.k;
+        return '<button data-act="tab" data-id="' + it.k + '" class="flex-1 flex flex-col items-center justify-center gap-[2px] ' + (on ? 'text-primary' : 'text-slate-400') + '">' +
+          '<span class="text-[18px] leading-none">' + it.i + '</span>' +
+          '<span class="text-[11px] ' + (on ? 'font-semibold' : '') + '">' + it.t + '</span></button>';
+      }).join('') + '</div></nav>';
+  }
+
+  // 横滑卡片
+  function dishCardH(dish) {
+    var s = dishStats(dish.id), w = getWindow(dish.windowId);
+    return '<div data-act="dish" data-id="' + dish.id + '" class="snap-item shrink-0 w-[150px] card overflow-hidden active:scale-[.97] transition">' +
+      '<div class="relative"><img src="' + dish.img + '" class="w-full h-[92px] object-cover bg-slate-100" loading="lazy" onerror="this.src=\'https://picsum.photos/seed/backup/400/300\'">' +
+      (dish.isNew ? '<span class="absolute top-1.5 left-1.5 text-[10px] bg-warm text-white px-1.5 py-[1px] rounded-md">新菜</span>' : '') +
+      '<span class="absolute bottom-1.5 right-1.5 text-[11px] bg-black/55 text-white px-1.5 py-[1px] rounded-md font-semibold">' + money(dish.price) + '</span>' +
+      '</div>' +
+      '<div class="p-2.5">' +
+      '<div class="text-[13px] font-semibold text-slate-800 truncate">' + esc(dish.name) + '</div>' +
+      '<div class="text-[11px] text-slate-400 mt-[2px] truncate">' + esc(w ? w.name : '') + '</div>' +
+      '<div class="mt-1.5 flex items-center gap-1">' + starsHTML(s.overall, 11) +
+      '<span class="text-[12px] font-bold text-warm ml-0.5">' + (s.count ? s.overall.toFixed(1) : '—') + '</span>' +
+      '<span class="text-[11px] text-slate-300">' + s.count + '评</span></div>' +
+      '</div></div>';
+  }
+
+  // 竖向列表项
+  function dishRow(dish, opt) {
+    opt = opt || {};
+    var s = dishStats(dish.id), w = getWindow(dish.windowId), c = getCanteen(dish.canteenId);
+    return '<div data-act="dish" data-id="' + dish.id + '" class="card p-3 flex gap-3 active:bg-slate-50 transition">' +
+      '<div class="relative shrink-0"><img src="' + dish.img + '" class="w-[76px] h-[76px] rounded-xl object-cover bg-slate-100" loading="lazy">' +
+      (opt.rank ? '<span class="absolute -top-1.5 -left-1.5 w-6 h-6 rounded-lg flex items-center justify-center text-[12px] font-bold text-white ' +
+        (opt.rank <= 3 ? 'bg-warm' : 'bg-slate-300') + '">' + opt.rank + '</span>' : '') + '</div>' +
+      '<div class="flex-1 min-w-0">' +
+      '<div class="flex items-start justify-between gap-2">' +
+      '<div class="text-[14px] font-semibold text-slate-800 truncate">' + esc(dish.name) + '</div>' +
+      '<div class="text-[14px] font-bold text-warm shrink-0">' + money(dish.price) + '</div></div>' +
+      '<div class="text-[11px] text-slate-400 mt-[2px] truncate">' + esc((c ? c.short : '') + ' · ' + (w ? w.name : '')) + '</div>' +
+      '<div class="mt-1 flex items-center gap-1.5">' + starsHTML(s.overall, 12) +
+      '<span class="text-[12px] font-bold text-warm">' + (s.count ? s.overall.toFixed(1) : '暂无') + '</span>' +
+      '<span class="text-[11px] text-slate-300">' + s.count + ' 条评价</span>' +
+      (opt.metric ? '<span class="ml-auto text-[11px] text-primary font-semibold">' + esc(opt.metric) + '</span>' : '') +
+      '</div>' +
+      '<div class="mt-1.5 flex flex-wrap gap-1">' + (s.few && s.count ? '<span class="text-[10px] px-1.5 py-[1px] rounded bg-slate-100 text-slate-400">评价较少，仅供参考</span>' : '') +
+      tagsHTML(dish.id).split('</span>').slice(0, 3).join('</span>') + '</div>' +
+      '</div></div>';
+  }
+
+  function sectionTitle(title, sub, act) {
+    return '<div class="flex items-end justify-between px-4 mt-5 mb-2.5">' +
+      '<div><h2 class="text-[16px] font-bold text-slate-800">' + esc(title) + '</h2>' +
+      (sub ? '<p class="text-[11px] text-slate-400 mt-[2px]">' + esc(sub) + '</p>' : '') + '</div>' +
+      (act ? '<button data-act="' + act.act + '" data-id="' + (act.id || '') + '" class="text-[12px] text-primary font-medium">' + esc(act.text) + ' ›</button>' : '') +
+      '</div>';
+  }
+
+  function reviewItem(r, opt) {
+    opt = opt || {};
+    var d = getDish(r.dishId);
+    var name = r.anonymous ? '匿名用户' : (r.nick || '同学');
+    var imgs = (r.images || []).slice(0, 3);
+    return '<div class="card p-3.5 ' + (opt.clickDish ? 'active:bg-slate-50' : '') + '" ' + (opt.clickDish ? 'data-act="dish" data-id="' + r.dishId + '"' : '') + '>' +
+      '<div class="flex items-center gap-2">' +
+      '<div class="w-7 h-7 rounded-full bg-blue-100 text-primary flex items-center justify-center text-[12px] font-bold">' + esc(name.slice(0, 1)) + '</div>' +
+      '<div class="flex-1 min-w-0"><div class="text-[12px] font-medium text-slate-700 truncate">' + esc(name) + (r.userId === 'me' ? ' <span class="text-primary">(我)</span>' : '') + '</div>' +
+      '<div class="flex items-center gap-1.5">' + starsHTML(avg5(r.scores), 11) + '<span class="text-[11px] text-slate-400">' + fmtTime(r.createdAt) + '</span></div></div>' +
+      (d ? '<div class="text-[11px] text-slate-400 shrink-0 max-w-[90px] truncate">' + esc(d.name) + '</div>' : '') +
+      '</div>' +
+      '<p class="mt-2 text-[13px] text-slate-700 leading-relaxed line-3">' + esc(r.text) + '</p>' +
+      (imgs.length ? '<div class="mt-2 flex gap-1.5">' + imgs.map(function (s) {
+        return '<img src="' + s + '" class="w-[72px] h-[54px] rounded-lg object-cover bg-slate-100">';
+      }).join('') + ((r.images.length > 3) ? '<div class="w-[72px] h-[54px] rounded-lg bg-slate-100 flex items-center justify-center text-[11px] text-slate-400">+' + (r.images.length - 3) + '</div>' : '') + '</div>' : '') +
+      (opt.status ? statusLine(r) : '') +
+      '</div>';
+  }
+  function statusBadge(st) {
+    var map = {
+      pending: ['bg-amber-50 text-amber-600 border-amber-200', '待审核'],
+      approved: ['bg-emerald-50 text-emerald-600 border-emerald-200', '已通过'],
+      rejected: ['bg-rose-50 text-rose-600 border-rose-200', '已驳回']
+    }[st] || ['bg-slate-50 text-slate-500 border-slate-200', st];
+    return '<span class="text-[11px] px-2 py-[2px] rounded-full border ' + map[0] + '">' + map[1] + '</span>';
+  }
+  function statusLine(r) {
+    var extra = (r.status === 'rejected' && r.rejectReason) ? '<div class="mt-1.5 text-[12px] text-rose-500 bg-rose-50 rounded-lg p-2">驳回原因：' + esc(r.rejectReason) + '</div>' : '';
+    return '<div class="mt-2 flex items-center gap-2">' + statusBadge(r.status) + '<span class="text-[11px] text-slate-400">' + (r.status === 'pending' ? '审核通过后将公开展示' : '') + '</span></div>' + extra;
+  }
+
+  /* ================= 页面：首页 ================= */
+  function pageHome() {
+    var top = topDishes(byOverall, 6);
+    var newOnes = saleDishes().filter(function (d) { return d.isNew || (Date.now() - d.createdAt) < 21 * DAY; })
+      .sort(function (a, b) { return dishStats(b.id).weighted - dishStats(a.id).weighted; }).slice(0, 6);
+    var latest = DB.reviews.filter(function (r) { return r.status === 'approved'; })
+      .sort(function (a, b) { return b.createdAt - a.createdAt; }).slice(0, 5);
+
+    return '<div class="mask-top pb-2">' +
+      '<div class="px-4 pt-4 pb-6">' +
+      '<div class="flex items-center justify-between text-white">' +
+      '<div><div class="text-[19px] font-bold">校园食堂点评 🍚</div>' +
+      '<div class="text-[11px] text-white/75 mt-[2px]">今天吃什么？让学长学姐告诉你</div></div>' +
+      '<button data-act="reset" class="text-[11px] text-white/70 px-2 py-1 rounded-full bg-white/15">重置数据</button></div>' +
+      '<div data-act="tab" data-id="search" class="mt-3.5 bg-white rounded-full h-10 flex items-center px-4 text-[13px] text-slate-400 shadow-sm">' +
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>' +
+      '<span class="ml-2">搜索菜品 / 窗口 / 食堂</span></div>' +
+      '</div></div>' +
+
+      sectionTitle('高分种草', '综合分 Top 6 · 近 30 天与带图评价加权', { act: 'tab', id: 'rank', text: '全部榜单' }) +
+      '<div class="flex gap-3 overflow-x-auto no-scrollbar snap-x px-4 pb-1">' +
+      (top.length ? top.map(dishCardH).join('') : emptyBox('还没有评价数据')) + '</div>' +
+
+      sectionTitle('本周好评新菜', '上新 21 天内 · 按综合分排序') +
+      '<div class="flex gap-3 overflow-x-auto no-scrollbar snap-x px-4 pb-1">' +
+      (newOnes.length ? newOnes.map(dishCardH).join('') : emptyBox('暂无新菜')) + '</div>' +
+
+      sectionTitle('食堂入口', '3 个食堂 · 8 个窗口') +
+      '<div class="px-4 grid gap-3">' + DB.canteens.map(function (c) {
+        var cnt = DB.windows.filter(function (w) { return w.canteenId === c.id; }).length;
+        var dnum = DB.dishes.filter(function (d) { return d.canteenId === c.id && d.onSale !== false; }).length;
+        return '<div data-act="canteen" data-id="' + c.id + '" class="card overflow-hidden active:scale-[.99] transition">' +
+          '<div class="relative h-[92px]"><img src="' + c.cover + '" class="w-full h-full object-cover">' +
+          '<div class="absolute inset-0 bg-gradient-to-t from-black/65 to-transparent"></div>' +
+          '<div class="absolute left-3 bottom-2 text-white"><div class="text-[15px] font-bold">' + esc(c.name) + '</div>' +
+          '<div class="text-[11px] text-white/80 mt-[1px]">' + cnt + ' 个窗口 · ' + dnum + ' 道菜 · ' + esc(c.open) + '</div></div>' +
+          '<div class="absolute right-3 bottom-2 text-[22px]">' + c.emoji + '</div></div>' +
+          '<div class="px-3 py-2 text-[12px] text-slate-500">' + esc(c.desc) + '</div></div>';
+      }).join('') + '</div>' +
+
+      sectionTitle('最新好评', '最近通过审核的 5 条评价') +
+      '<div class="px-4 grid gap-2.5">' + (latest.length ? latest.map(function (r) { return reviewItem(r, { clickDish: true }); }).join('') : emptyBox('暂无评价')) + '</div>' +
+
+      '<div class="h-4"></div>';
+  }
+  function emptyBox(t) {
+    return '<div class="w-full card p-6 text-center text-[12px] text-slate-400">' + esc(t) + '</div>';
+  }
+
+  /* ================= 页面：食堂 / 窗口 ================= */
+  function pageCanteen(p) {
+    var c = getCanteen(p.id);
+    if (!c) return emptyBox('食堂不存在');
+    var ws = DB.windows.filter(function (w) { return w.canteenId === c.id; });
+    return '<div class="mask-top px-4 pt-4 pb-6 text-white">' +
+      '<div class="flex items-center gap-1.5 text-white/85 text-[12px]"><button data-act="back">‹ 返回</button></div>' +
+      '<div class="mt-2 flex items-center gap-3"><div class="text-[34px]">' + c.emoji + '</div>' +
+      '<div class="flex-1"><div class="text-[18px] font-bold">' + esc(c.name) + '</div>' +
+      '<div class="text-[11px] text-white/80 mt-[2px]">' + esc(c.open) + ' · ' + ws.length + ' 个窗口</div></div></div>' +
+      '<div class="mt-2.5 text-[12px] text-white/85">' + esc(c.desc) + '</div>' +
+      '</div>' +
+      '<div class="px-4 -mt-3">' +
+      '<div class="card p-3.5">' +
+      '<div class="text-[14px] font-bold text-slate-800 mb-2">窗口列表</div>' +
+      '<div class="grid gap-2">' + ws.map(function (w) {
+        var ds = DB.dishes.filter(function (d) { return d.windowId === w.id && d.onSale !== false; });
+        var avg = 0, cn = 0;
+        ds.forEach(function (d) { var s = dishStats(d.id); if (s.count) { avg += s.overall; cn++; } });
+        return '<div data-act="window" data-id="' + w.id + '" class="flex items-center gap-3 p-2.5 rounded-xl bg-slate-50 active:bg-slate-100">' +
+          '<div class="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-[20px] shadow-sm">' + w.emoji + '</div>' +
+          '<div class="flex-1 min-w-0"><div class="text-[14px] font-semibold text-slate-800">' + esc(w.name) + '</div>' +
+          '<div class="text-[11px] text-slate-400 truncate">' + esc(w.desc) + ' · ' + ds.length + ' 道菜</div></div>' +
+          '<div class="text-right shrink-0"><div class="text-[13px] font-bold text-warm">' + (cn ? (avg / cn).toFixed(1) : '—') + '</div>' +
+          '<div class="text-[11px] text-slate-400">均分</div></div></div>';
+      }).join('') + '</div></div></div>' +
+      '<div class="px-4 mt-4">' + sectionTitle('本食堂热门', '', null).replace('px-4 mt-5', 'px-0 mt-0') +
+      '<div class="grid gap-2.5">' + topDishes(function (d) { return d.canteenId === c.id ? byOverall(d) : -1; }, 5)
+        .filter(function (d) { return d.canteenId === c.id; }).map(function (d) { return dishRow(d); }).join('') + '</div></div>' +
+      '<div class="h-4"></div>';
+  }
+
+  function pageWindow(p) {
+    var w = getWindow(p.id);
+    if (!w) return emptyBox('窗口不存在');
+    var c = getCanteen(w.canteenId);
+    var ds = DB.dishes.filter(function (d) { return d.windowId === w.id; });
+    return header(w.name, { right: '' }) +
+      '<div class="px-4 pt-3">' +
+      '<div class="card p-3.5 flex items-center gap-3">' +
+      '<div class="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center text-[24px]">' + w.emoji + '</div>' +
+      '<div class="flex-1"><div class="text-[15px] font-bold text-slate-800">' + esc(w.name) + '</div>' +
+      '<div class="text-[11px] text-slate-500 mt-[2px]">' + esc(c ? c.name : '') + ' · ' + esc(w.desc) + '</div></div></div>' +
+      '<div class="mt-3 text-[12px] text-slate-400 px-1">共 ' + ds.length + ' 道在售菜品</div>' +
+      '<div class="mt-1.5 grid gap-2.5">' + ds.map(function (d) { return dishRow(d); }).join('') + '</div>' +
+      '<div class="h-4"></div></div>';
+  }
+
+  /* ================= 页面：菜品详情 ================= */
+  function pageDish(p) {
+    var d = getDish(p.id);
+    if (!d) return emptyBox('菜品不存在');
+    var w = getWindow(d.windowId), c = getCanteen(d.canteenId);
+    var s = dishStats(d.id);
+    var rs = dishReviews(d.id, 'approved').sort(function (a, b) { return b.createdAt - a.createdAt; });
+    var fav = isFav(d.id);
+
+    return '<div class="relative">' +
+      '<img src="' + d.img + '" class="w-full h-[230px] object-cover bg-slate-100">' +
+      '<div class="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-transparent"></div>' +
+      '<div class="absolute top-0 left-0 right-0 flex items-center justify-between p-3">' +
+      '<button data-act="back" class="w-9 h-9 rounded-full bg-black/35 backdrop-blur flex items-center justify-center text-white">' +
+      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>' +
+      '<button data-act="fav" data-id="' + d.id + '" class="w-9 h-9 rounded-full bg-black/35 backdrop-blur flex items-center justify-center text-[17px]">' + (fav ? '⭐' : '☆') + '</button>' +
+      '</div>' +
+      (d.isNew ? '<div class="absolute left-3 top-[196px] text-[11px] bg-warm text-white px-2 py-[2px] rounded-md">本周新菜</div>' : '') +
+      '</div>' +
+
+      '<div class="px-4 -mt-4 relative z-10">' +
+      '<div class="card p-4">' +
+      '<div class="flex items-start justify-between gap-3">' +
+      '<div class="flex-1 min-w-0"><div class="text-[19px] font-bold text-slate-800">' + esc(d.name) + '</div>' +
+      '<div class="text-[12px] text-slate-400 mt-1">' + esc((c ? c.short : '') + ' · ' + (w ? w.name : '')) + '</div></div>' +
+      '<div class="text-[20px] font-bold text-warm shrink-0">' + money(d.price) + '</div></div>' +
+      '<p class="mt-2.5 text-[13px] text-slate-600 leading-relaxed">' + esc(d.desc) + '</p>' +
+      '<div class="mt-3 flex flex-wrap gap-1.5">' + tagsHTML(d.id) + '</div>' +
+      '</div>' +
+
+      // 评分
+      '<div class="card p-4 mt-3">' +
+      '<div class="flex items-center gap-4">' +
+      '<div class="text-center"><div class="text-[40px] font-extrabold text-warm leading-none">' + (s.count ? s.overall.toFixed(1) : '—') + '</div>' +
+      '<div class="mt-1">' + starsHTML(s.overall, 13) + '</div>' +
+      '<div class="text-[11px] text-slate-400 mt-1">' + s.count + ' 条评价</div></div>' +
+      '<div class="flex-1 grid gap-2">' + DIMS.map(function (dim) {
+        var v = s.dims[dim.k] || 0;
+        return '<div class="flex items-center gap-2">' +
+          '<span class="text-[12px] text-slate-500 w-7 shrink-0">' + dim.label + '</span>' +
+          '<div class="flex-1">' + bar(v * 20) + '</div>' +
+          '<span class="text-[11px] text-slate-500 w-7 text-right">' + (s.count ? v.toFixed(1) : '—') + '</span>' +
+          '</div>';
+      }).join('') + '</div></div>' +
+      (s.few ? '<div class="mt-3 text-[11px] text-slate-400 bg-slate-50 rounded-lg px-2.5 py-1.5 inline-block">⚠️ 评价较少（' + s.count + ' 条），仅供参考</div>' : '') +
+      '</div>' +
+
+      // 评价列表
+      '<div class="mt-5 flex items-center justify-between px-1">' +
+      '<h3 class="text-[15px] font-bold text-slate-800">全部评价</h3>' +
+      '<span class="text-[12px] text-slate-400">' + rs.length + ' 条已通过</span></div>' +
+      '<div class="mt-2 grid gap-2.5">' +
+      (rs.length ? rs.map(function (r) { return reviewItem(r); }).join('') : emptyBox('还没有评价，来当第一个吧！')) +
+      '</div><div class="h-4"></div></div>' +
+
+      // 底部写评价
+      '<div class="fixed bottom-[66px] left-1/2 -translate-x-1/2 w-full max-w-[480px] px-4 z-40">' +
+      '<button data-act="write" data-id="' + d.id + '" class="w-full h-12 rounded-full bg-primary text-white font-semibold shadow-lg shadow-blue-500/30 flex items-center justify-center gap-1.5">' +
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>写评价</button></div>';
+  }
+
+  /* ================= 页面：写评价 ================= */
+  var form = null;
+  function initForm(dishId) {
+    form = {
+      dishId: dishId,
+      scores: { taste: 0, price: 0, portion: 0, queue: 0, hygiene: 0 },
+      text: '',
+      images: [],
+      anon: true,
+      nick: DB.user && DB.user.nick ? DB.user.nick : ''
+    };
+  }
+  function pageWrite(p) {
+    var d = getDish(p.id);
+    if (!d) return emptyBox('菜品不存在');
+    if (!form || form.dishId !== d.id) initForm(d.id);
+    var w = getWindow(d.windowId);
+    return header('写评价', { plain: true }) +
+      '<div class="px-4 pt-2">' +
+      '<div class="card p-3 flex items-center gap-3">' +
+      '<img src="' + d.img + '" class="w-12 h-12 rounded-xl object-cover bg-slate-100">' +
+      '<div class="flex-1 min-w-0"><div class="text-[14px] font-semibold text-slate-800 truncate">' + esc(d.name) + '</div>' +
+      '<div class="text-[11px] text-slate-400">' + esc(w ? w.name : '') + ' · ' + money(d.price) + '</div></div></div>' +
+
+      '<div class="card p-4 mt-3">' +
+      '<div class="text-[14px] font-bold text-slate-800 mb-1">五维打分</div>' +
+      '<div class="text-[11px] text-slate-400 mb-2">口味 / 价格 / 分量 / 排队（越高越快）/ 卫生</div>' +
+      '<div class="grid gap-3">' + DIMS.map(function (dim) {
+        var v = form.scores[dim.k];
+        return '<div class="flex items-center justify-between">' +
+          '<span class="text-[13px] text-slate-600">' + dim.label + (dim.k === 'queue' ? '<span class="text-[10px] text-slate-400"> 越高越快</span>' : '') + '</span>' +
+          '<div class="flex gap-1">' + [1, 2, 3, 4, 5].map(function (n) {
+            return '<button data-act="setScore" data-id="' + dim.k + '|' + n + '" class="w-7 h-7 flex items-center justify-center">' + star(n <= v, 24) + '</button>';
+          }).join('') + '</div></div>';
+      }).join('') + '</div></div>' +
+
+      '<div class="card p-4 mt-3">' +
+      '<textarea id="rvText" rows="4" placeholder="说点什么吧～比如口味、分量、排队时长…（至少 5 个字）" class="w-full text-[13px] text-slate-700 bg-slate-50 rounded-xl p-3 outline-none resize-none focus:ring-2 focus:ring-blue-100">' + esc(form.text) + '</textarea>' +
+      '<div class="mt-3">' +
+      '<div class="text-[13px] text-slate-600 mb-2">图片（最多 6 张）</div>' +
+      '<div class="flex flex-wrap gap-2">' +
+      form.images.map(function (src, i) {
+        return '<div class="relative w-[74px] h-[74px]"><img src="' + src + '" class="w-full h-full object-cover rounded-xl bg-slate-100">' +
+          '<button data-act="delImg" data-id="' + i + '" class="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-slate-800/80 text-white text-[12px] flex items-center justify-center">×</button></div>';
+      }).join('') +
+      (form.images.length < 6 ? '<label class="w-[74px] h-[74px] rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center text-slate-400">' +
+        '<span class="text-[20px] leading-none">＋</span><span class="text-[10px] mt-1">' + form.images.length + '/6</span>' +
+        '<input type="file" accept="image/*" multiple data-act="pickImg" class="hidden"></label>' : '') +
+      '</div></div></div>' +
+
+      '<div class="card p-4 mt-3">' +
+      '<div class="flex items-center justify-between">' +
+      '<div><div class="text-[13px] text-slate-700">匿名评价</div><div class="text-[11px] text-slate-400">开启后不显示你的昵称</div></div>' +
+      '<button data-act="toggleAnon" class="w-11 h-6 rounded-full transition ' + (form.anon ? 'bg-primary' : 'bg-slate-200') + ' relative">' +
+      '<span class="absolute top-[2px] ' + (form.anon ? 'right-[2px]' : 'left-[2px]') + ' w-5 h-5 rounded-full bg-white shadow transition"></span></button></div>' +
+      (form.anon ? '' : '<input id="rvNick" value="' + esc(form.nick) + '" placeholder="你的昵称（选填）" class="mt-3 w-full h-10 bg-slate-50 rounded-xl px-3 text-[13px] text-slate-700 outline-none focus:ring-2 focus:ring-blue-100">') +
+      '</div>' +
+      '<div class="h-24"></div></div>' +
+
+      '<div class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[480px] px-4 pb-3 pt-2 bg-gradient-to-t from-slate-50 via-slate-50 to-transparent z-40">' +
+      '<button data-act="submitReview" class="w-full h-12 rounded-full bg-primary text-white font-semibold shadow-lg shadow-blue-500/30">提交评价</button></div>';
+  }
+
+  function compressImg(file) {
+    return new Promise(function (resolve) {
+      var fr = new FileReader();
+      fr.onload = function () {
+        var img = new Image();
+        img.onload = function () {
+          var max = 720, w = img.width, h = img.height;
+          if (w > max) { h = Math.round(h * max / w); w = max; }
+          var cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0, w, h);
+          resolve(cv.toDataURL('image/jpeg', 0.72));
+        };
+        img.onerror = function () { resolve(fr.result); };
+        img.src = fr.result;
+      };
+      fr.onerror = function () { resolve(null); };
+      fr.readAsDataURL(file);
+    });
+  }
+
+  /* ================= 页面：榜单 ================= */
+  var rankTabs = [
+    { k: 'overall', t: '高分榜', f: byOverall, m: function (d) { return '综合 ' + dishStats(d.id).overall.toFixed(1); } },
+    { k: 'value', t: '性价比榜', f: byValue, m: function (d) { return '性价比 ' + byValue(d).toFixed(2); } },
+    { k: 'taste', t: '口味榜', f: byDim('taste'), m: function (d) { return '口味 ' + dishStats(d.id).dims.taste.toFixed(1); } },
+    { k: 'portion', t: '分量榜', f: byDim('portion'), m: function (d) { return '分量 ' + dishStats(d.id).dims.portion.toFixed(1); } },
+    { k: 'hygiene', t: '卫生榜', f: byDim('hygiene'), m: function (d) { return '卫生 ' + dishStats(d.id).dims.hygiene.toFixed(1); } },
+    { k: 'queue', t: '排队友好榜', f: byDim('queue'), m: function (d) { return '排队 ' + dishStats(d.id).dims.queue.toFixed(1); } },
+    { k: 'new', t: '新菜榜', f: byNew, m: function (d) { return '综合 ' + dishStats(d.id).overall.toFixed(1); } }
+  ];
+  var rankKey = 'overall';
+  function pageRank() {
+    var tab = rankTabs.filter(function (t) { return t.k === rankKey; })[0] || rankTabs[0];
+    var list = topDishes(tab.f, 10);
+    return '<div class="mask-top px-4 pt-4 pb-5 text-white">' +
+      '<div class="text-[19px] font-bold">食堂榜单 🏆</div>' +
+      '<div class="text-[11px] text-white/75 mt-1">近 30 天评价 ×1.5 · 带图评价 ×1.2 加权</div></div>' +
+      '<div class="px-4 -mt-2">' +
+      '<div class="flex gap-2 overflow-x-auto no-scrollbar pb-1">' + rankTabs.map(function (t) {
+        var on = t.k === rankKey;
+        return '<button data-act="rankTab" data-id="' + t.k + '" class="shrink-0 px-3 h-8 rounded-full text-[12px] font-medium border transition ' +
+          (on ? 'bg-primary text-white border-primary shadow-sm' : 'bg-white text-slate-500 border-slate-200') + '">' + t.t + '</button>';
+      }).join('') + '</div>' +
+      '<div class="mt-3 grid gap-2.5">' + (list.length ? list.map(function (d, i) {
+        return dishRow(d, { rank: i + 1, metric: tab.m(d) });
+      }).join('') : emptyBox('暂无可上榜的菜品')) + '</div>' +
+      '<div class="text-[11px] text-slate-400 text-center mt-3 leading-relaxed">排序规则：综合分 = 五维平均分；近 30 天评价权重 ×1.5，带图评价权重 ×1.2<br>评价少于 3 条的菜品已标注「评价较少，仅供参考」</div>' +
+      '<div class="h-4"></div></div>';
+  }
+
+  /* ================= 页面：搜索 ================= */
+  var filter = { q: '', canteen: '', price: '', score: '', img: false };
+  var PRICE_RANGE = {
+    '': null, 'a': [0, 10], 'b': [10, 15], 'c': [15, 20], 'd': [20, 999]
+  };
+  function searchList() {
+    var q = filter.q.trim().toLowerCase();
+    var list = saleDishes().filter(function (d) {
+      if (q) {
+        var w = getWindow(d.windowId), c = getCanteen(d.canteenId);
+        var hay = (d.name + ' ' + (w ? w.name : '') + ' ' + (c ? c.name : '') + ' ' + (d.desc || '')).toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
+      if (filter.canteen && d.canteenId !== filter.canteen) return false;
+      var pr = PRICE_RANGE[filter.price];
+      if (pr && !(d.price >= pr[0] && d.price < pr[1])) return false;
+      var s = dishStats(d.id);
+      if (filter.score && !(s.count && s.overall >= parseFloat(filter.score))) return false;
+      if (filter.img) {
+        var has = dishReviews(d.id, 'approved').some(function (r) { return r.images && r.images.length; });
+        if (!has) return false;
+      }
+      return true;
+    }).sort(function (a, b) { return byOverall(b) - byOverall(a); });
+    return list;
+  }
+  // 结果区单独渲染：输入中文时不会整页重排，避免打断输入法
+  function searchResultHTML() {
+    var list = searchList();
+    return '<div class="mt-3 flex items-center justify-between px-1">' +
+      '<div class="text-[12px] text-slate-400">共找到 <span class="text-primary font-semibold">' + list.length + '</span> 道菜</div>' +
+      ((filter.q || filter.canteen || filter.price || filter.score || filter.img) ? '<button data-act="resetFilter" class="text-[12px] text-slate-400">清空筛选</button>' : '') +
+      '</div>' +
+      '<div class="mt-2 grid gap-2.5">' + (list.length ? list.map(function (d) { return dishRow(d); }).join('') :
+        '<div class="card p-8 text-center"><div class="text-[30px]">🍽️</div><div class="text-[13px] text-slate-500 mt-2">没有找到相关菜品</div><div class="text-[11px] text-slate-400 mt-1">换个关键词或放宽筛选试试</div></div>') + '</div>';
+  }
+  function pageSearch() {
+    return '<div class="mask-top px-4 pt-4 pb-5">' +
+      '<div class="bg-white rounded-full h-10 flex items-center px-4 shadow-sm">' +
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#94A3B8" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>' +
+      '<input id="sq" value="' + esc(filter.q) + '" placeholder="搜索菜名 / 窗口 / 食堂" class="ml-2 flex-1 bg-transparent outline-none text-[13px] text-slate-700 placeholder-slate-400">' +
+      '</div></div>' +
+
+      '<div class="px-4 -mt-2">' +
+      '<div class="card p-3.5">' +
+      '<div class="text-[13px] font-bold text-slate-700 mb-2.5">筛选</div>' +
+      '<div class="flex gap-2 overflow-x-auto no-scrollbar">' +
+      '<button data-act="fCanteen" data-id="" class="shrink-0 px-3 h-8 rounded-full text-[12px] border ' + (!filter.canteen ? 'bg-primary text-white border-primary' : 'bg-white text-slate-500 border-slate-200') + '">全部食堂</button>' +
+      DB.canteens.map(function (c) {
+        return '<button data-act="fCanteen" data-id="' + c.id + '" class="shrink-0 px-3 h-8 rounded-full text-[12px] border ' + (filter.canteen === c.id ? 'bg-primary text-white border-primary' : 'bg-white text-slate-500 border-slate-200') + '">' + esc(c.short) + '</button>';
+      }).join('') + '</div>' +
+      '<div class="flex gap-2 overflow-x-auto no-scrollbar mt-2">' +
+      [['', '价格不限'], ['a', '¥10 以下'], ['b', '¥10-15'], ['c', '¥15-20'], ['d', '¥20 以上']].map(function (o) {
+        return '<button data-act="fPrice" data-id="' + o[0] + '" class="shrink-0 px-3 h-8 rounded-full text-[12px] border ' + (filter.price === o[0] ? 'bg-primary text-white border-primary' : 'bg-white text-slate-500 border-slate-200') + '">' + o[1] + '</button>';
+      }).join('') + '</div>' +
+      '<div class="flex gap-2 overflow-x-auto no-scrollbar mt-2">' +
+      [['', '评分不限'], ['4.5', '4.5 分以上'], ['4', '4 分以上'], ['3.5', '3.5 分以上']].map(function (o) {
+        return '<button data-act="fScore" data-id="' + o[0] + '" class="shrink-0 px-3 h-8 rounded-full text-[12px] border ' + (filter.score === o[0] ? 'bg-primary text-white border-primary' : 'bg-white text-slate-500 border-slate-200') + '">' + o[1] + '</button>';
+      }).join('') +
+      '<button data-act="fImg" class="shrink-0 px-3 h-8 rounded-full text-[12px] border ' + (filter.img ? 'bg-primary text-white border-primary' : 'bg-white text-slate-500 border-slate-200') + '">📷 只看有图</button>' +
+      '</div></div>' +
+
+      '<div id="searchResult">' + searchResultHTML() + '</div>' +
+      '<div class="h-4"></div></div>';
+  }
+
+  /* ================= 页面：我的 ================= */
+  function pageMine() {
+    var mine = DB.reviews.filter(function (r) { return r.userId === 'me'; })
+      .sort(function (a, b) { return b.createdAt - a.createdAt; });
+    var favs = DB.favorites.map(getDish).filter(Boolean);
+    var pend = mine.filter(function (r) { return r.status === 'pending'; }).length;
+    return '<div class="mask-top px-4 pt-4 pb-6 text-white">' +
+      '<div class="flex items-center gap-3">' +
+      '<div class="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center text-[26px]">🎓</div>' +
+      '<div><div class="text-[17px] font-bold">' + esc(DB.user.nick || '校园干饭人') + '</div>' +
+      '<div class="text-[11px] text-white/75 mt-[2px]">已发布 ' + mine.length + ' 条评价 · 收藏 ' + favs.length + ' 道菜</div></div></div>' +
+      '<div class="mt-3 flex gap-2">' +
+      '<div class="flex-1 bg-white/15 rounded-xl py-2 text-center"><div class="text-[16px] font-bold">' + pend + '</div><div class="text-[11px] text-white/75">待审核</div></div>' +
+      '<div class="flex-1 bg-white/15 rounded-xl py-2 text-center"><div class="text-[16px] font-bold">' + mine.filter(function (r) { return r.status === 'approved'; }).length + '</div><div class="text-[11px] text-white/75">已通过</div></div>' +
+      '<div class="flex-1 bg-white/15 rounded-xl py-2 text-center"><div class="text-[16px] font-bold">' + favs.length + '</div><div class="text-[11px] text-white/75">收藏</div></div>' +
+      '</div></div>' +
+
+      '<div class="px-4 -mt-3">' +
+      '<div class="card p-3.5">' +
+      '<div class="flex items-center justify-between mb-2.5"><div class="text-[14px] font-bold text-slate-800">我的评价</div>' +
+      '<span class="text-[11px] text-slate-400">按时间倒序</span></div>' +
+      (mine.length ? '<div class="grid gap-2.5">' + mine.map(function (r) { return reviewItem(r, { status: true, clickDish: true }); }).join('') + '</div>'
+        : emptyBox('还没有发布评价，去菜品页写一条吧')) +
+      '</div>' +
+
+      '<div class="card p-3.5 mt-3">' +
+      '<div class="flex items-center justify-between mb-2.5"><div class="text-[14px] font-bold text-slate-800">我的收藏</div></div>' +
+      (favs.length ? '<div class="grid grid-cols-2 gap-2.5">' + favs.map(function (d) {
+        var s = dishStats(d.id);
+        return '<div data-act="dish" data-id="' + d.id + '" class="rounded-xl bg-slate-50 p-2 active:bg-slate-100">' +
+          '<img src="' + d.img + '" class="w-full h-[70px] object-cover rounded-lg bg-slate-100">' +
+          '<div class="text-[12px] font-semibold text-slate-700 mt-1.5 truncate">' + esc(d.name) + '</div>' +
+          '<div class="text-[11px] text-warm font-bold">' + money(d.price) + ' · ' + (s.count ? s.overall.toFixed(1) : '暂无') + '分</div></div>';
+      }).join('') + '</div>' : emptyBox('还没有收藏，点菜品页右上角 ☆ 试试')) +
+      '</div>' +
+
+      '<div class="mt-4 text-center">' +
+      '<button data-act="admin" class="text-[11px] text-slate-300 underline decoration-dotted">管理员入口</button>' +
+      '<div class="text-[10px] text-slate-300 mt-2">数据保存在本机 localStorage · key: campus_food_data</div>' +
+      '</div><div class="h-4"></div></div>';
+  }
+
+  /* ================= 页面：管理员 ================= */
+  var adminTab = 'review';
+  function pageAdmin() {
+    if (!adminAuthed) {
+      return header('管理员登录', { plain: true }) +
+        '<div class="px-4 pt-6"><div class="card p-5 text-center">' +
+        '<div class="text-[34px]">🔐</div>' +
+        '<div class="text-[14px] font-semibold text-slate-700 mt-2">请输入管理员密码</div>' +
+        '<input id="adminPwd" type="password" placeholder="密码" class="mt-4 w-full h-11 bg-slate-50 rounded-xl px-3 text-center text-[14px] outline-none focus:ring-2 focus:ring-blue-100">' +
+        '<button data-act="adminLogin" class="mt-3 w-full h-11 rounded-full bg-primary text-white font-semibold">登录</button>' +
+        '<div class="text-[11px] text-slate-300 mt-3">演示密码：admin123</div></div></div>';
+    }
+    var pend = DB.reviews.filter(function (r) { return r.status === 'pending'; });
+    var today = DB.reviews.filter(function (r) { return Date.now() - r.createdAt < DAY; }).length;
+    var high = saleDishes().filter(function (d) { var s = dishStats(d.id); return s.count && s.overall >= 4.5; }).length;
+    var reports = DB.reports.filter(function (r) { return r.status === 'pending'; });
+
+    var tabs = [['review', '评价审核', pend.length], ['dish', '菜品管理', ''], ['report', '举报处理', reports.length]];
+    var body = '';
+    if (adminTab === 'review') {
+      body = pend.length ? '<div class="grid gap-2.5">' + pend.map(function (r) {
+        return '<div data-act="adminReview" data-id="' + r.id + '" class="card p-3 active:bg-slate-50">' +
+          '<div class="flex items-center justify-between">' +
+          '<div class="text-[13px] font-semibold text-slate-800">' + esc((getDish(r.dishId) || {}).name || '') + '</div>' +
+          '<span class="text-[11px] px-2 py-[2px] rounded-full bg-amber-50 text-amber-600 border border-amber-200">待审核</span></div>' +
+          '<div class="text-[12px] text-slate-500 mt-1.5 line-2">' + esc(r.text) + '</div>' +
+          '<div class="mt-1.5 flex items-center gap-2">' + starsHTML(avg5(r.scores), 12) +
+          '<span class="text-[11px] text-slate-400">' + fmtTime(r.createdAt) + (r.images && r.images.length ? ' · ' + r.images.length + ' 图' : '') + '</span></div>' +
+          '</div>';
+      }).join('') + '</div>' : emptyBox('没有待审核的评价 🎉');
+    } else if (adminTab === 'dish') {
+      body = '<button data-act="dishNew" class="w-full h-11 rounded-xl border-2 border-dashed border-primary/40 text-primary text-[13px] font-semibold bg-blue-50/40">＋ 新增菜品</button>' +
+        '<div class="mt-3 grid gap-2.5">' + DB.dishes.map(function (d) {
+          var w = getWindow(d.windowId), s = dishStats(d.id);
+          return '<div class="card p-3">' +
+            '<div class="flex items-center gap-3">' +
+            '<img src="' + d.img + '" class="w-12 h-12 rounded-xl object-cover bg-slate-100">' +
+            '<div class="flex-1 min-w-0"><div class="text-[13px] font-semibold text-slate-800 truncate">' + esc(d.name) + (d.onSale === false ? ' <span class="text-[10px] text-slate-400">(已下架)</span>' : '') + '</div>' +
+            '<div class="text-[11px] text-slate-400">' + esc(w ? w.name : '') + ' · ' + money(d.price) + ' · ' + (s.count ? s.overall.toFixed(1) : '暂无') + '分</div></div>' +
+            '<button data-act="dishToggle" data-id="' + d.id + '" class="px-2.5 h-7 rounded-lg text-[11px] border ' + (d.onSale === false ? 'border-emerald-200 text-emerald-600' : 'border-slate-200 text-slate-500') + '">' + (d.onSale === false ? '上架' : '下架') + '</button>' +
+            '</div>' +
+            '<div class="mt-2 flex gap-2">' +
+            '<button data-act="dishEdit" data-id="' + d.id + '" class="flex-1 h-8 rounded-lg bg-slate-100 text-[12px] text-slate-600">编辑</button>' +
+            '<button data-act="dishDel" data-id="' + d.id + '" class="flex-1 h-8 rounded-lg bg-rose-50 text-[12px] text-rose-500">删除</button>' +
+            '</div></div>';
+        }).join('') + '</div>';
+    } else {
+      body = reports.length ? '<div class="grid gap-2.5">' + reports.map(function (rp) {
+        var r = getReview(rp.reviewId);
+        if (!r) return '';
+        return '<div class="card p-3">' +
+          '<div class="flex items-center justify-between"><span class="text-[12px] font-semibold text-slate-700">举报：' + esc(rp.reason) + '</span>' +
+          '<span class="text-[11px] text-slate-400">' + fmtTime(rp.createdAt) + '</span></div>' +
+          '<div class="mt-1.5 text-[12px] text-slate-500 bg-slate-50 rounded-lg p-2 line-2">' + esc(r.text) + '</div>' +
+          '<div class="mt-2 flex gap-2">' +
+          '<button data-act="reportIgnore" data-id="' + rp.id + '" class="flex-1 h-8 rounded-lg bg-slate-100 text-[12px] text-slate-600">忽略举报</button>' +
+          '<button data-act="reportHide" data-id="' + rp.id + '" class="flex-1 h-8 rounded-lg bg-rose-50 text-[12px] text-rose-500">下架该评价</button>' +
+          '</div></div>';
+      }).join('') + '</div>' : emptyBox('没有待处理举报');
+    }
+
+    return header('管理后台', { plain: true }) +
+      '<div class="px-4 pt-2">' +
+      '<div class="grid grid-cols-3 gap-2.5">' +
+      statCard('待审核', pend.length, '⏳', 'amber') +
+      statCard('今日评价', today, '📝', 'blue') +
+      statCard('高分菜品', high, '⭐', 'emerald') +
+      '</div>' +
+      '<div class="flex gap-2 mt-3">' + tabs.map(function (t) {
+        var on = adminTab === t[0];
+        return '<button data-act="adminTab" data-id="' + t[0] + '" class="flex-1 h-9 rounded-xl text-[12px] font-medium border ' + (on ? 'bg-primary text-white border-primary' : 'bg-white text-slate-500 border-slate-200') + '">' + t[1] + (t[2] ? '(' + t[2] + ')' : '') + '</button>';
+      }).join('') + '</div>' +
+      '<div class="mt-3">' + body + '</div>' +
+      '<div class="h-4"></div></div>';
+  }
+  function statCard(t, v, emoji, color) {
+    var bg = { amber: 'bg-amber-50 text-amber-600', blue: 'bg-blue-50 text-blue-600', emerald: 'bg-emerald-50 text-emerald-600' }[color];
+    return '<div class="card p-3 text-center"><div class="text-[18px]">' + emoji + '</div>' +
+      '<div class="text-[20px] font-bold ' + bg.split(' ')[1] + ' mt-0.5">' + v + '</div>' +
+      '<div class="text-[11px] text-slate-400 mt-[1px]">' + t + '</div></div>';
+  }
+
+  /* ================= 弹窗 ================= */
+  function showModal(html) {
+    var wrap = document.createElement('div');
+    wrap.className = 'fixed inset-0 z-[90] flex items-end justify-center';
+    wrap.innerHTML = '<div class="absolute inset-0 bg-black/40" data-act="closeModal"></div>' +
+      '<div class="relative w-full max-w-[480px] bg-white rounded-t-2xl max-h-[86vh] overflow-y-auto fade p-4 pb-6">' + html + '</div>';
+    document.body.appendChild(wrap);
+    window.__modal = wrap;
+  }
+  function closeModal() {
+    if (window.__modal) { window.__modal.remove(); window.__modal = null; }
+  }
+  function reviewDetailModal(id) {
+    var r = getReview(id);
+    if (!r) return;
+    var d = getDish(r.dishId);
+    showModal(
+      '<div class="w-10 h-1 rounded-full bg-slate-200 mx-auto mb-3"></div>' +
+      '<div class="text-[15px] font-bold text-slate-800">评价详情</div>' +
+      '<div class="text-[12px] text-slate-400 mt-1">' + esc(d ? d.name : '') + ' · ' + (r.anonymous ? '匿名用户' : esc(r.nick)) + ' · ' + fmtTime(r.createdAt) + '</div>' +
+      '<div class="mt-3 grid gap-2 bg-slate-50 rounded-xl p-3">' + DIMS.map(function (dim) {
+        return '<div class="flex items-center gap-2"><span class="text-[12px] text-slate-500 w-7">' + dim.label + '</span>' +
+          starsHTML(r.scores[dim.k], 14) + '<span class="text-[12px] text-slate-500">' + r.scores[dim.k] + '</span></div>';
+      }).join('') + '</div>' +
+      '<div class="mt-3 text-[13px] text-slate-700 leading-relaxed bg-slate-50 rounded-xl p-3">' + esc(r.text) + '</div>' +
+      ((r.images && r.images.length) ? '<div class="mt-2 flex gap-2 flex-wrap">' + r.images.map(function (s) {
+        return '<img src="' + s + '" class="w-[80px] h-[60px] object-cover rounded-lg">';
+      }).join('') + '</div>' : '') +
+      '<div class="mt-4"><textarea id="rejectReason" rows="2" placeholder="驳回原因（选填，将展示给用户）" class="w-full bg-slate-50 rounded-xl p-3 text-[13px] outline-none resize-none"></textarea></div>' +
+      '<div class="mt-3 flex gap-2.5">' +
+      '<button data-act="reject" data-id="' + r.id + '" class="flex-1 h-11 rounded-full bg-rose-50 text-rose-600 font-semibold text-[14px]">驳回</button>' +
+      '<button data-act="approve" data-id="' + r.id + '" class="flex-1 h-11 rounded-full bg-primary text-white font-semibold text-[14px]">通过</button>' +
+      '</div>'
+    );
+  }
+  function dishEditModal(id) {
+    var d = id ? getDish(id) : { name: '', price: 12, windowId: DB.windows[0].id, desc: '', img: '', isNew: false, onSale: true };
+    if (!d) return;
+    var opts = DB.windows.map(function (w) {
+      var c = getCanteen(w.canteenId);
+      return '<option value="' + w.id + '"' + (d.windowId === w.id ? ' selected' : '') + '>' + esc((c ? c.short : '') + ' / ' + w.name) + '</option>';
+    }).join('');
+    showModal(
+      '<div class="w-10 h-1 rounded-full bg-slate-200 mx-auto mb-3"></div>' +
+      '<div class="text-[15px] font-bold text-slate-800">' + (id ? '编辑菜品' : '新增菜品') + '</div>' +
+      '<div class="mt-3 grid gap-2.5">' +
+      field('菜名', '<input id="df_name" value="' + esc(d.name) + '" class="w-full h-10 bg-slate-50 rounded-xl px-3 text-[13px] outline-none">') +
+      field('价格（元）', '<input id="df_price" type="number" value="' + d.price + '" class="w-full h-10 bg-slate-50 rounded-xl px-3 text-[13px] outline-none">') +
+      field('所属窗口', '<select id="df_window" class="w-full h-10 bg-slate-50 rounded-xl px-3 text-[13px] outline-none">' + opts + '</select>') +
+      field('简介', '<input id="df_desc" value="' + esc(d.desc || '') + '" class="w-full h-10 bg-slate-50 rounded-xl px-3 text-[13px] outline-none">') +
+      field('图片 URL', '<input id="df_img" value="' + esc(d.img || '') + '" placeholder="https://picsum.photos/seed/xxx/400/300" class="w-full h-10 bg-slate-50 rounded-xl px-3 text-[13px] outline-none">') +
+      '<label class="flex items-center justify-between bg-slate-50 rounded-xl px-3 h-10"><span class="text-[13px] text-slate-600">标记为本周新菜</span>' +
+      '<input id="df_new" type="checkbox"' + (d.isNew ? ' checked' : '') + ' class="w-4 h-4 accent-blue-600"></label>' +
+      '</div>' +
+      '<div class="mt-4 flex gap-2.5">' +
+      '<button data-act="closeModal" class="flex-1 h-11 rounded-full bg-slate-100 text-slate-600 font-semibold text-[14px]">取消</button>' +
+      '<button data-act="dishSave" data-id="' + (id || '') + '" class="flex-1 h-11 rounded-full bg-primary text-white font-semibold text-[14px]">保存</button>' +
+      '</div>'
+    );
+  }
+  function field(label, inner) {
+    return '<div><div class="text-[12px] text-slate-500 mb-1">' + label + '</div>' + inner + '</div>';
+  }
+
+  /* ================= 渲染 ================= */
+  var PAGES = {
+    home: pageHome, canteen: pageCanteen, window: pageWindow, dish: pageDish,
+    write: pageWrite, rank: pageRank, search: pageSearch, mine: pageMine, admin: pageAdmin
+  };
+  function render() {
+    var p = cur();
+    var fn = PAGES[p.name] || pageHome;
+    var hideNav = (p.name === 'write');
+    document.getElementById('app').innerHTML =
+      '<div class="min-h-screen fade">' + fn(p.params) + '</div>' +
+      (hideNav ? '' : navBar());
+  }
+
+  /* ================= 事件 ================= */
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest ? e.target.closest('[data-act]') : null;
+    if (!t) return;
+    var act = t.getAttribute('data-act');
+    var id = t.getAttribute('data-id') || '';
+
+    switch (act) {
+      case 'tab': go(id, {}, { tab: true }); break;
+      case 'back': back(); break;
+      case 'canteen': go('canteen', { id: id }); break;
+      case 'window': go('window', { id: id }); break;
+      case 'dish': go('dish', { id: id }); break;
+      case 'write': initForm(id); go('write', { id: id }); break;
+      case 'fav':
+        var i = DB.favorites.indexOf(id);
+        if (i >= 0) { DB.favorites.splice(i, 1); toast('已取消收藏'); }
+        else { DB.favorites.push(id); toast('已加入收藏 ⭐'); }
+        save(); render(); break;
+      case 'reset':
+        if (confirm('确定重置为种子数据？当前本机数据将被清空。')) reset();
+        break;
+      case 'setScore':
+        var kv = id.split('|');
+        form.scores[kv[0]] = parseInt(kv[1], 10);
+        render(); break;
+      case 'toggleAnon': form.anon = !form.anon; render(); break;
+      case 'delImg': form.images.splice(parseInt(id, 10), 1); render(); break;
+      case 'submitReview': submitReview(); break;
+      case 'rankTab': rankKey = id; render(); break;
+      case 'fCanteen': filter.canteen = id; render(); break;
+      case 'fPrice': filter.price = id; render(); break;
+      case 'fScore': filter.score = id; render(); break;
+      case 'fImg': filter.img = !filter.img; render(); break;
+      case 'resetFilter': filter = { q: '', canteen: '', price: '', score: '', img: false }; render(); break;
+      case 'clearQ': filter.q = ''; render(); break;
+      case 'admin': go('admin'); break;
+      case 'adminLogin':
+        var pwd = document.getElementById('adminPwd');
+        if (pwd && pwd.value === 'admin123') { adminAuthed = true; toast('登录成功'); render(); }
+        else toast('密码错误');
+        break;
+      case 'adminTab': adminTab = id; render(); break;
+      case 'adminReview': reviewDetailModal(id); break;
+      case 'approve':
+        var r1 = getReview(id); if (r1) { r1.status = 'approved'; save(); }
+        closeModal(); toast('已通过'); render(); break;
+      case 'reject':
+        var r2 = getReview(id);
+        if (r2) {
+          var ta = document.getElementById('rejectReason');
+          r2.status = 'rejected';
+          r2.rejectReason = ta ? ta.value.trim() : '';
+          save();
+        }
+        closeModal(); toast('已驳回'); render(); break;
+      case 'reportIgnore':
+        var rp1 = DB.reports.filter(function (x) { return x.id === id; })[0];
+        if (rp1) { rp1.status = 'resolved'; save(); }
+        toast('举报已忽略'); render(); break;
+      case 'reportHide':
+        var rp2 = DB.reports.filter(function (x) { return x.id === id; })[0];
+        if (rp2) {
+          var rr = getReview(rp2.reviewId);
+          if (rr) { rr.status = 'rejected'; rr.rejectReason = '经举报核实，该评价已被下架。'; }
+          rp2.status = 'resolved'; save();
+        }
+        toast('评价已下架'); render(); break;
+      case 'dishNew': dishEditModal(''); break;
+      case 'dishEdit': dishEditModal(id); break;
+      case 'dishSave': dishSave(id); break;
+      case 'dishToggle':
+        var dt = getDish(id);
+        if (dt) { dt.onSale = dt.onSale === false; save(); toast(dt.onSale ? '已上架' : '已下架'); render(); }
+        break;
+      case 'dishDel':
+        var dd = getDish(id);
+        if (dd && confirm('删除「' + dd.name + '」？其评价也会一并移除。')) {
+          DB.dishes = DB.dishes.filter(function (x) { return x.id !== id; });
+          DB.reviews = DB.reviews.filter(function (x) { return x.dishId !== id; });
+          DB.favorites = DB.favorites.filter(function (x) { return x !== id; });
+          save(); toast('已删除'); render();
+        }
+        break;
+      case 'closeModal': closeModal(); break;
+    }
+  });
+
+  // 输入类事件（搜索 / 表单文本）
+  function syncText() {
+    var p = cur();
+    if (p.name === 'write' && form) {
+      var ta = document.getElementById('rvText');
+      if (ta) form.text = ta.value;
+      var ni = document.getElementById('rvNick');
+      if (ni) form.nick = ni.value;
+    }
+  }
+  document.addEventListener('input', function (e) {
+    var el = e.target;
+    if (el.id === 'sq') {
+      filter.q = el.value;
+      var box = document.getElementById('searchResult');
+      if (box) box.innerHTML = searchResultHTML(); // 只更新结果区，保留输入焦点与中文输入法
+      return;
+    }
+    syncText();
+  });
+  document.addEventListener('change', function (e) {
+    if (e.target && e.target.getAttribute && e.target.getAttribute('data-act') === 'pickImg') {
+      var files = Array.prototype.slice.call(e.target.files || []);
+      var room = 6 - form.images.length;
+      files.slice(0, room).forEach(function (f) {
+        compressImg(f).then(function (data) {
+          if (data && form.images.length < 6) { form.images.push(data); render(); }
+        });
+      });
+      e.target.value = '';
+    }
+    syncText();
+  });
+
+  function submitReview() {
+    syncText();
+    var miss = DIMS.filter(function (d) { return !form.scores[d.k]; });
+    if (miss.length) { toast('请给「' + miss[0].label + '」打分'); return; }
+    if (form.text.trim().length < 5) { toast('评价文字至少 5 个字'); return; }
+    DB.reviews.push({
+      id: uid('r'),
+      dishId: form.dishId,
+      userId: 'me',
+      nick: form.anon ? '' : (form.nick.trim() || DB.user.nick || '同学'),
+      anonymous: form.anon,
+      scores: {
+        taste: form.scores.taste, price: form.scores.price, portion: form.scores.portion,
+        queue: form.scores.queue, hygiene: form.scores.hygiene
+      },
+      text: form.text.trim(),
+      images: form.images.slice(0, 6),
+      status: 'pending',
+      rejectReason: '',
+      createdAt: Date.now()
+    });
+    save();
+    initForm(form.dishId);
+    toast('已提交，等待审核');
+    back();
+  }
+
+  function dishSave(id) {
+    var val = function (k) { var el = document.getElementById(k); return el ? el.value : ''; };
+    var name = val('df_name').trim();
+    var price = parseFloat(val('df_price'));
+    if (!name) { toast('请填写菜名'); return; }
+    if (isNaN(price) || price <= 0) { toast('价格不合法'); return; }
+    var w = getWindow(val('df_window'));
+    var img = val('df_img').trim() || 'https://picsum.photos/seed/' + encodeURIComponent(name) + '/400/300';
+    var isNew = (document.getElementById('df_new') || {}).checked;
+    if (id) {
+      var d = getDish(id);
+      d.name = name; d.price = price; d.windowId = w.id; d.canteenId = w.canteenId;
+      d.desc = val('df_desc').trim(); d.img = img; d.isNew = !!isNew;
+      toast('已保存');
+    } else {
+      DB.dishes.push({
+        id: uid('d'), name: name, price: price, windowId: w.id, canteenId: w.canteenId,
+        desc: val('df_desc').trim(), img: img, isNew: !!isNew, tags: isNew ? ['本周新菜'] : [],
+        onSale: true, createdAt: Date.now()
+      });
+      toast('已新增菜品');
+    }
+    save(); closeModal(); render();
+  }
+
+  /* ================= 启动 ================= */
+  load();
+  go('home', {}, { tab: true });
+})();
+</script>
+</body>
+</html>

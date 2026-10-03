@@ -396,6 +396,67 @@ export async function deleteMovement(
   });
 }
 
+/**
+ * 给一条**购买**流水补记 / 修改金额。**只动 `total_price`，不动 quantity、不动库存**。
+ *
+ * ## 为什么金额可以改、数量不能改
+ *
+ * `total_price` 是**统计属性**：它只进月支出，不参与任何库存计算，改它不会让账对不上。
+ * 而数量是流水本身的事实，改了就必须重算库存，「这条流水记的是 5 个」和
+ * 「当时其实买了 3 个」就说不清了 —— 想改数量的正确做法是把这条删掉重记，
+ * 让流水始终保留当时发生了什么。
+ *
+ * ## 刻意不联动的两个字段
+ *
+ * - `unit_price`（单价）：补货页「只填单价自动算总价」是一次性的录入便利，
+ *   事后改总额不该偷偷改写这条流水当时的单价口径；
+ * - `items.last_price`（参考单价）：它由 `unit_price` 决定，同理不碰。
+ *
+ * ## 已知局限（当前不修）
+ *
+ * 只改 `total_price`，不联动 `unit_price` 和 `last_price`。
+ * 如果用户当初没填单价、事后只填总额，这条流水的单价仍是 null，
+ * 下次补货页不显示上次单价提示。
+ * 彻底解决需要判断「这条是不是最近一次采购」，涉及跨表联动，当前不做。
+ *
+ * ## 为什么不开事务
+ * 单条 UPDATE 本身就是原子的。文件顶部 `Core` 后缀的约定针对的是
+ * 「插入流水 + 重算库存」这种必须成对出现的写原语，这里只有一次写，不需要事务。
+ *
+ * `price` 传 null 表示清空（「留空则不计入支出」），传负数或非数字一律抛错。
+ */
+export async function updateMovementPrice(
+  db: SQLiteDatabase,
+  movementId: number,
+  price: number | null,
+): Promise<void> {
+  if (price !== null) {
+    if (typeof price !== 'number' || !Number.isFinite(price)) {
+      throw new Error('金额必须是数字');
+    }
+    if (price < 0) {
+      throw new Error(`金额不能是负数，实际收到 ${price}`);
+    }
+  }
+
+  const row = await db.getFirstAsync<{ type: string }>(
+    'SELECT type FROM stock_movements WHERE id = ?',
+    [movementId],
+  );
+  if (!row) {
+    throw new Error(`流水 ${movementId} 不存在，无法修改金额`);
+  }
+  // 消耗 / 丢弃 / 盘点都没有金额这个概念，给了也无处显示
+  if (row.type !== 'purchase') {
+    throw new Error('只有购买流水可以修改金额');
+  }
+
+  await db.runAsync('UPDATE stock_movements SET total_price = ? WHERE id = ?', [
+    price === null ? null : roundTo(price, 2),
+    movementId,
+  ]);
+}
+
 /** 删除某物品的全部流水并重算库存（备份导入、重置统计用）。**不开事务**。 */
 export async function deleteMovementsForItemCore(
   db: SQLiteDatabase,

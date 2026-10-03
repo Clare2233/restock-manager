@@ -7,6 +7,7 @@ import {
   countMovementsByItem,
   listConsumptionSamples,
   listMovementsByItem,
+  updateMovementPrice,
 } from '@/db/repositories/movements.repo';
 import { predictItem, type Prediction } from '@/domain/prediction';
 import { itemsStore } from '@/store/items.store';
@@ -56,6 +57,11 @@ export interface ItemDetailResult {
    * 写完同步刷新详情页自己的数据。失败不抛异常（store 内部已兜住，原因进其 error）。
    */
   consumeOnce: () => Promise<void>;
+  /**
+   * 给一条购买流水补记 / 修改金额（只改 total_price，不动数量与库存）。
+   * **会抛异常**：错误同时进 `error`，由页面决定怎么提示（弹窗里显示 / Alert）。
+   */
+  updatePrice: (movementId: number, price: number | null) => Promise<void>;
   /**
    * 删除当前物品。**会抛异常**，由页面决定怎么呈现失败（确认弹窗里转 loading）。
    * 删除成功后同步刷新 store，返回列表页时立刻生效，不会看到已删的物品。
@@ -164,6 +170,23 @@ export function useItemDetail(itemId: number | null): ItemDetailResult {
     await load();
   }, [itemId, load]);
 
+  const updatePrice = useCallback(
+    async (movementId: number, price: number | null) => {
+      try {
+        const db = await getReadyDatabase();
+        await updateMovementPrice(db, movementId, price);
+      } catch (cause) {
+        // 写失败不覆盖已有数据：错误进 state，页面再决定怎么提示
+        setError(cause instanceof Error && cause.message ? cause.message : String(cause));
+        throw cause;
+      }
+      // 金额不影响库存，无需同步列表缓存；统计页每次聚焦都会自己重查。
+      // 这里只刷本页（流水列表 + 预测），让改完立刻看得见。
+      await load();
+    },
+    [load],
+  );
+
   const remove = useCallback(async () => {
     if (itemId === null) return;
     const db = await getReadyDatabase();
@@ -183,6 +206,7 @@ export function useItemDetail(itemId: number | null): ItemDetailResult {
     error,
     refresh,
     consumeOnce,
+    updatePrice,
     remove,
   };
 }

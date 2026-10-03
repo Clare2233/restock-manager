@@ -7,6 +7,7 @@ import { AppButton } from '@/components/common/app-button';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { EmptyState } from '@/components/common/empty-state';
 import { SectionCard } from '@/components/common/section-card';
+import { EditPriceDialog } from '@/components/items/edit-price-dialog';
 import { MovementRow } from '@/components/items/movement-row';
 import { PredictionCard } from '@/components/items/prediction-card';
 import { StockBadge } from '@/components/items/stock-badge';
@@ -18,6 +19,7 @@ import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { formatStock } from '@/domain/units';
 import { useTheme } from '@/hooks/use-theme';
 import { parseItemId, useItemDetail } from '@/hooks/use-item-detail';
+import type { StockMovement } from '@/types/models';
 
 const ICON_NOT_FOUND = { ios: 'questionmark.square', android: 'help_outline', web: 'help_outline' } as const;
 const ICON_NO_CONSUME = { ios: 'minus.circle', android: 'remove_circle', web: 'remove_circle' } as const;
@@ -49,12 +51,17 @@ export default function ItemDetailScreen() {
     loading,
     error,
     consumeOnce,
+    updatePrice,
     remove,
   } = useItemDetail(itemId);
 
   const [consuming, setConsuming] = useState(false);
   const [deleteVisible, setDeleteVisible] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // 正在改金额的那条购买流水；null = 弹窗关闭
+  const [priceTarget, setPriceTarget] = useState<StockMovement | null>(null);
+  const [savingPrice, setSavingPrice] = useState(false);
+  const [priceError, setPriceError] = useState<string | null>(null);
 
   const handleConsumeOnce = async () => {
     if (!item || item.stock <= 0) return;
@@ -63,6 +70,21 @@ export default function ItemDetailScreen() {
       await consumeOnce();
     } finally {
       setConsuming(false);
+    }
+  };
+
+  // 金额写失败时弹窗保持打开、红字显示原因：关掉重开一次要再输入一遍，没必要
+  const handleSavePrice = async (price: number | null) => {
+    if (!priceTarget) return;
+    setSavingPrice(true);
+    setPriceError(null);
+    try {
+      await updatePrice(priceTarget.id, price);
+      setPriceTarget(null);
+    } catch (cause) {
+      setPriceError(toErrorMessage(cause));
+    } finally {
+      setSavingPrice(false);
     }
   };
 
@@ -206,6 +228,7 @@ export default function ItemDetailScreen() {
                     movement={movement}
                     unit={item.unit}
                     hideDivider={index === purchases.length - 1}
+                    onEditPrice={() => setPriceTarget(movement)}
                   />
                 ))
               )}
@@ -263,6 +286,20 @@ export default function ItemDetailScreen() {
         loading={deleting}
         onConfirm={() => void handleDelete()}
         onCancel={() => setDeleteVisible(false)}
+      />
+
+      {/* 修改金额：只有购买历史的行有这个入口（MovementRow 内部按 type 过滤），
+          改的是实付总额，不动数量与库存 */}
+      <EditPriceDialog
+        visible={priceTarget !== null}
+        currentPrice={priceTarget?.totalPrice ?? null}
+        loading={savingPrice}
+        error={priceError}
+        onSave={(price) => void handleSavePrice(price)}
+        onCancel={() => {
+          setPriceTarget(null);
+          setPriceError(null);
+        }}
       />
     </ThemedView>
   );

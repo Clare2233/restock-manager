@@ -1,6 +1,6 @@
 import { SymbolView } from 'expo-symbols';
 import type { ComponentProps } from 'react';
-import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -10,7 +10,7 @@ import { diffInCalendarDays, formatClock, formatDateCN, nowMs, startOfDayMs } fr
 import { formatMoney, formatSignedQuantity } from '@/utils/number';
 
 /**
- * 流水行 —— 物品详情页的流水列表项 / 首页的最近动态。
+ * 流水行 —— 物品详情页的流水列表项。
  *
  * 布局：左侧「类型图标 + 类型名 + 时间」，右侧「数量 + 金额」（上下两行，右对齐）。
  *
@@ -19,6 +19,9 @@ import { formatMoney, formatSignedQuantity } from '@/utils/number';
  * - `unit`：基础计量单位。流水数量与库存同单位，`StockMovement` 里不含单位。
  * - `currencySymbol`：金额前缀，默认 `¥`。设置页可改成别的符号。
  * - `hideDivider`：隐藏底部分隔线。列表最后一行传 true，避免卡片末尾多出一条线。
+ * - `onEditPrice`：给了就在这行右侧显示「修改金额」按钮，**且仅 purchase 行显示**
+ *   （消耗 / 丢弃 / 盘点没有金额这个概念）。金额是统计属性，改它不影响库存；
+ *   数量不能改（改了账就对不上），所以这里只有金额入口，没有改数量入口。
  * - `style`：外层样式微调。
  *
  * ## 为什么数量和金额放在同一侧的上下两行，而不是硬拆成「中 / 右」两列
@@ -42,6 +45,8 @@ export type MovementRowProps = {
   currencySymbol?: string;
   /** 隐藏底部分隔线，列表最后一行传 true */
   hideDivider?: boolean;
+  /** 「修改金额」按钮回调；只有 purchase 类型的行会渲染这个按钮 */
+  onEditPrice?: () => void;
   style?: StyleProp<ViewStyle>;
 };
 
@@ -81,6 +86,9 @@ export const MOVEMENT_TYPE_META: Record<MovementType, { label: string; symbol: S
     symbol: { ios: 'trash', android: 'delete', web: 'delete' },
   },
 };
+
+/** 「修改金额」按钮的图标：三个平台各自给名，否则 Android / Web 会静默留白 */
+const ICON_EDIT_PRICE: SymbolName = { ios: 'pencil', android: 'edit', web: 'edit' };
 
 /** 按类型决定显示用的有符号数量，见组件顶部说明 */
 function resolveSignedQuantity(movement: StockMovement): number {
@@ -129,6 +137,7 @@ export function MovementRow({
   unit,
   currencySymbol = '¥',
   hideDivider = false,
+  onEditPrice,
   style,
 }: MovementRowProps) {
   const theme = useTheme();
@@ -138,6 +147,7 @@ export function MovementRow({
   const quantityText = formatSignedQuantity(signedQuantity, unit);
   const timeText = resolveTimeText(movement.occurredAt);
   const moneyText = resolveMoneyText(movement, unit, currencySymbol);
+  const showEditPrice = movement.type === 'purchase' && onEditPrice !== undefined;
 
   return (
     // 外层只负责底部分隔线，内层才是行本身 —— 与 FieldRow 的「行 + 分隔线」结构一致
@@ -166,6 +176,18 @@ export function MovementRow({
             </ThemedText>
           ) : null}
         </View>
+
+        {/* 金额是唯一事后能改的字段（改它不动库存），所以按钮只出现在购买行 */}
+        {showEditPrice ? (
+          <Pressable
+            onPress={onEditPrice}
+            hitSlop={Spacing.two}
+            accessibilityRole="button"
+            accessibilityLabel="修改金额"
+            style={({ pressed }) => [styles.editButton, pressed ? styles.pressed : null]}>
+            <SymbolView name={ICON_EDIT_PRICE} size={16} tintColor={theme.textSecondary} />
+          </Pressable>
+        ) : null}
       </View>
 
       {hideDivider ? null : (
@@ -206,5 +228,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 22,
     fontWeight: 600,
+  },
+  editButton: {
+    padding: Spacing.one,
+    // 右侧一列已经有数量 / 金额两行文字，按钮贴着它避免挤开对齐
+    marginLeft: Spacing.half,
+    justifyContent: 'center',
+  },
+  pressed: {
+    opacity: 0.5,
   },
 });
